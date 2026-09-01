@@ -30,7 +30,6 @@ import sys
 import time
 import uuid
 import zipfile
-from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -277,12 +276,7 @@ def _macos_crash_reports() -> list[Path]:
     return reports[:_MAX_IPS_REPORTS]
 
 
-def _kiro_cli_version(
-    *,
-    platform_name: str | None = None,
-    home: Path | None = None,
-    environ: Mapping[str, str] | None = None,
-) -> str:
+def _kiro_cli_version() -> str:
     """Version string of the installed Kiro CLI, for the support bundle.
 
     Resolves the binary through :func:`kiro_crew.kiro_cli.resolve_kiro_cli`
@@ -291,8 +285,7 @@ def _kiro_cli_version(
     spawning the bare name: a collector process whose inherited ``PATH`` lacks
     the install directory made the bare-name spawn misreport a working install
     as ``unavailable`` in both ``versions.txt`` and the prefilled bug-report
-    footer (#7674). The keyword-only parameters are passthroughs to the
-    resolver so tests can pin the host layout; production callers pass nothing.
+    footer (#7674).
 
     Return values, each a plain one-line string (both consumers interpolate
     it verbatim):
@@ -306,9 +299,10 @@ def _kiro_cli_version(
       printed nothing.
 
     Never raises: diagnostics collection must degrade to a string, so the
-    spawn keeps its existing containment boundary.
+    spawn keeps its existing containment boundary. Tests pin the host layout
+    by monkeypatching this module's ``resolve_kiro_cli`` binding.
     """
-    binary = resolve_kiro_cli(platform_name=platform_name, home=home, environ=environ)
+    binary = resolve_kiro_cli()
     if binary is None:
         return "unavailable"
     try:

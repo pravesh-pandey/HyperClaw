@@ -741,10 +741,12 @@ class TestKiroCliVersionResolution:
     """#7674: the probe resolves the binary instead of spawning a bare name.
 
     The decisive case plants a fake executable reachable ONLY through a fixed
-    ``known_kiro_cli_dirs()`` entry (an injected fake home's ``.local/bin``)
-    while the injected ``PATH`` excludes it — red on the old bare-name spawn,
-    green through the resolver. Every layout knob (``home`` / ``environ`` /
-    ``platform_name``) is injected so nothing depends on the test host.
+    ``known_kiro_cli_dirs()`` entry (a fake home's ``.local/bin``) while the
+    pinned ``PATH`` excludes it — red on the old bare-name spawn, green
+    through the resolver. Layout is pinned by rebinding the module's
+    ``resolve_kiro_cli`` to the REAL resolver with fixed ``home`` / ``environ``
+    / ``platform_name`` kwargs, so the resolution logic itself stays under
+    test and nothing depends on the test host.
     """
 
     @staticmethod
@@ -756,33 +758,37 @@ class TestKiroCliVersionResolution:
         cli.chmod(0o755)
         return cli
 
+    @staticmethod
+    def _pin_layout(monkeypatch, home: Path, path_dir: Path) -> None:
+        from kiro_crew.kiro_cli import resolve_kiro_cli as real_resolve
+
+        monkeypatch.setattr(
+            diagnostics,
+            "resolve_kiro_cli",
+            lambda: real_resolve(
+                platform_name="linux", home=home, environ={"PATH": str(path_dir)}
+            ),
+        )
+
     @pytest.mark.skipif(os.name == "nt", reason="POSIX shell-script fake executable")
-    def test_binary_absent_from_path_is_still_found(self, tmp_path):
+    def test_binary_absent_from_path_is_still_found(self, tmp_path, monkeypatch):
         home = tmp_path / "home"
         self._plant_cli(home, "#!/bin/sh\necho 'kiro-cli 9.9.9'\n")
-        result = diagnostics._kiro_cli_version(
-            platform_name="linux",
-            home=home,
-            environ={"PATH": str(tmp_path / "elsewhere")},
-        )
-        assert result == "kiro-cli 9.9.9"
+        self._pin_layout(monkeypatch, home, tmp_path / "elsewhere")
+        assert diagnostics._kiro_cli_version() == "kiro-cli 9.9.9"
 
     def test_nothing_resolved_is_exactly_unavailable(self, monkeypatch):
-        monkeypatch.setattr(diagnostics, "resolve_kiro_cli", lambda **_kw: None)
+        monkeypatch.setattr(diagnostics, "resolve_kiro_cli", lambda: None)
         assert diagnostics._kiro_cli_version() == "unavailable"
 
     @pytest.mark.skipif(os.name == "nt", reason="POSIX shell-script fake executable")
-    def test_nonzero_exit_is_not_runnable_not_unavailable(self, tmp_path):
+    def test_nonzero_exit_is_not_runnable_not_unavailable(self, tmp_path, monkeypatch):
         home = tmp_path / "home"
         self._plant_cli(home, "#!/bin/sh\necho boom >&2\nexit 3\n")
-        result = diagnostics._kiro_cli_version(
-            platform_name="linux",
-            home=home,
-            environ={"PATH": str(tmp_path / "elsewhere")},
-        )
-        assert result == "present but not runnable"
+        self._pin_layout(monkeypatch, home, tmp_path / "elsewhere")
+        assert diagnostics._kiro_cli_version() == "present but not runnable"
 
     def test_spawn_failure_is_not_runnable_not_unavailable(self, tmp_path, monkeypatch):
         ghost = str(tmp_path / "ghost" / "kiro-cli")
-        monkeypatch.setattr(diagnostics, "resolve_kiro_cli", lambda **_kw: ghost)
+        monkeypatch.setattr(diagnostics, "resolve_kiro_cli", lambda: ghost)
         assert diagnostics._kiro_cli_version() == "present but not runnable"
