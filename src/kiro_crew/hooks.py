@@ -1156,7 +1156,7 @@ def resolve_effective_denied_regexes(
     later loosening reverses) or a rule the user is enforcing themselves.
     """
     return security.compute_effective_denied(
-        security.BUILTIN_DENIED_RULES,
+        list(security.BUILTIN_DENIED_RULES) + security.edition_denied_rules(),
         config.denied_commands_disabled_ids,
         config.denied_commands_disable_all,
         [p.pattern for p in config.denied_commands_user_added if p.enabled],

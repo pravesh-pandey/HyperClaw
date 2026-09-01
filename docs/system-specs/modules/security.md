@@ -748,6 +748,35 @@ even if the user disabled it or set disable-all (tightest-wins). The hooks gate
 computes this once per tool call via `HookManager._effective_denied(ctx)` and
 passes it as `denied_regexes` into `is_denied`.
 
+**Edition-contributed rules — the `denied_rules` seam.** A composed edition can
+contribute additional `DeniedCommandRule` records through the
+`DeniedRuleProvider` platform adapter (`current_context().denied_rules`).
+`security.edition_denied_rules()` reads and validates them and
+`hooks.resolve_effective_denied_regexes` unions them into the `rules` argument of
+`compute_effective_denied`, so a contributed rule is **default-ON and resolved by
+exactly the same opt-out arithmetic as a built-in**: an operator can disable it by
+id or clear it with `disable_all` through the existing keystone file and the
+existing `/api/security/denied-commands` endpoints, and Settings → Security lists
+it (tagged `source="edition"`) alongside the built-ins.
+
+This is deliberately the opposite half of `SecurityOverlay.extra_deny_patterns`,
+which remains the un-weakenable floor: overlay patterns travel the GLOB tier via
+`extra_patterns` and no opt-out can reach them. An edition picks per pattern —
+floor, or default-on-but-overridable. Consequences of that split, all pinned by
+`test/test_denied_rule_seam.py`:
+
+- **Regex, not glob.** A contributed `pattern` is a Python regex on the regex
+  tier. Moving a pattern over from the overlay requires rewriting it; a glob's
+  `*` are quantifiers as a regex.
+- **Namespaced ids.** `disabled_ids` is one flat set, so an id colliding with a
+  built-in id is skipped (the built-in wins) rather than letting one rule's
+  toggle move another's.
+- **Not pinnable (v1).** Governance `commands`-scope pins resolve a pattern to a
+  rule id against the static catalog, so a pin cannot name a contributed rule. An
+  edition needing an un-opt-out-able pattern keeps using the overlay.
+- **Fail-soft.** A raising or absent provider yields no contributed rules; the
+  built-in catalog and the overlay floor are unaffected.
+
 **Opt-out state — keystone `denied_commands.json`.** The opt-out state is a
 security ceiling, so it lives in its OWN keystone file
 `~/.kiro/crew/denied_commands.json` (respecting `KIROCREW_HOME`) — NOT in the

@@ -147,10 +147,14 @@ def test_snapshot_shape_and_defaults(home: Path):
         "enabled",
         "pinned",
         "lock_reason",
+        # Discriminates a shipped rule from one contributed through the
+        # ``denied_rules`` seam; see test_denied_rule_seam.py.
+        "source",
     }
     assert b["enabled"] is True
     assert b["pinned"] is False
     assert b["lock_reason"] is None
+    assert b["source"] == "builtin"
     assert snap["effective_count"] == _CATALOG_N
 
 

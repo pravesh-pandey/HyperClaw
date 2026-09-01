@@ -1746,6 +1746,76 @@ def builtin_denied_rules() -> list[dict]:
     ]
 
 
+def edition_denied_rules() -> list[DeniedCommandRule]:
+    """Denied-command rules contributed by the composed edition, validated.
+
+    Reads ``current_context().denied_rules.denied_rules()`` (the
+    ``DeniedRuleProvider`` seam) and returns only entries safe to union into the
+    DISABLEABLE regex tier.  Unlike the ``SecurityOverlay`` floor these rules ARE
+    user-disableable — the whole point of the seam — so they are resolved by
+    ``compute_effective_denied`` exactly like a built-in and honour
+    ``disabled_ids`` / ``disable_all``.
+
+    Rejected (skipped with a warning, never raised):
+
+    * a non-:class:`DeniedCommandRule` entry, or one with a blank ``id`` /
+      ``pattern`` — there would be nothing to key an opt-out on;
+    * an ``id`` colliding with a BUILT-IN rule id — ``disabled_ids`` is one flat
+      set, so a collision would make one rule's toggle silently move the other.
+      The built-in wins, mirroring the ADD-only de-dupe the skill-discovery seam
+      uses for provider names;
+    * a duplicate ``id`` within the edition's own list (first occurrence wins).
+
+    Fail-soft: an ungoverned/standalone host, an absent seam (older composed
+    context), or a raising provider all yield ``[]`` — the built-in catalog stands
+    on its own and the un-weakenable overlay floor is untouched either way, so
+    degrading here loses only an additive rule.  ``PlatformCompositionError``
+    still propagates fail-closed, as everywhere else in this module.
+    """
+    from kiro_crew.platform.context import PlatformCompositionError, current_context
+
+    try:
+        provider = getattr(current_context(), "denied_rules", None)
+        if provider is None:
+            return []
+        contributed = list(provider.denied_rules())
+    except PlatformCompositionError:
+        raise
+    except Exception:
+        logger.debug("edition denied_rules lookup failed; using built-ins only", exc_info=True)
+        return []
+
+    out: list[DeniedCommandRule] = []
+    seen: set[str] = set()
+    for rule in contributed:
+        rid = getattr(rule, "id", None)
+        pattern = getattr(rule, "pattern", None)
+        if not isinstance(rid, str) or not rid.strip():
+            logger.warning("edition denied rule with no id skipped")
+            continue
+        if not isinstance(pattern, str) or not pattern.strip():
+            logger.warning("edition denied rule %s has no pattern; skipped", rid)
+            continue
+        if rid in _RULES_BY_ID:
+            logger.warning(
+                "edition denied rule %s collides with a built-in rule id; built-in wins", rid
+            )
+            continue
+        if rid in seen:
+            logger.warning("edition denied rule %s is a duplicate; first occurrence wins", rid)
+            continue
+        seen.add(rid)
+        out.append(
+            DeniedCommandRule(
+                id=rid,
+                pattern=pattern,
+                category=str(getattr(rule, "category", "") or "edition"),
+                description=str(getattr(rule, "description", "") or ""),
+            )
+        )
+    return out
+
+
 def pinned_builtin_command_ids() -> set[str]:
     """Return built-in rule ids force-pinned by the ACTIVE governance ceiling.
 
