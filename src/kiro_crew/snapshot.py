@@ -21,6 +21,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING, Any, Callable
 
 from kiro_crew import pinned_fs, platform_compat
+from kiro_crew.jsonl_util import RECORD_CAP, UnreadableRecord, strict_raw_records
 
 if TYPE_CHECKING:
     from kiro_crew import snapshot_redact
@@ -2146,25 +2147,84 @@ def _merge_crons(src_path: Path, dst_path: Path) -> None:
     print(f"  Cron jobs imported: {imported} (skipped {total - imported} duplicates)")
 
 
+# Longest single notification RECORD the merge will materialise. Named here so a
+# test can move the dial; a real record is a small JSON object (ts, message,
+# priority, deep link), so the shared cap has enormous headroom over anything
+# legitimate. Nothing else bounds one record: notifications.jsonl has no
+# per-record size limit, and `for line in handle` would allocate a crafted
+# newline-free line whole.
+_RECORD_CAP = RECORD_CAP
+
+
 def _merge_notifications(src_path: Path, dst_path: Path) -> None:
-    existing: set[str] = set()
-    with open(dst_path) as f:
-        for line in f:
-            try:
-                existing.add(json.loads(line).get("ts") or line.strip())
-            except (ValueError, TypeError):
-                pass
+    """Append the archive's notifications to the live file, skipping duplicates.
+
+    Both files are agent-writable, and this reader feeds a durable write:
+    the records parsed out of *dst_path* become the dedupe set that decides
+    what gets appended back into it. So an over-cap record ABORTS the merge
+    (:func:`kiro_crew.jsonl_util.strict_raw_records`) rather than being
+    skipped -- a skipped dst record would drop its key from ``existing`` and
+    let the merge append a duplicate of a notification the user already has,
+    and a skipped src record would silently lose one from the restore.
+
+    The two aborts differ in how far they get, and only the first is a
+    no-op. An over-cap record in *dst_path* is found before the append handle
+    is opened, so the live file is left exactly as it was found. An over-cap
+    record in *src_path* is found mid-merge, so the records appended before it
+    STAY -- they are whole records, and because a re-run rebuilds ``existing``
+    from the now-larger live file, finishing the merge later is idempotent.
+    Either way no record is silently dropped and the archive is untouched.
+
+    Records are copied as BYTES, never decoded and re-encoded, so a record
+    the local encoding cannot represent survives the merge verbatim. A record
+    that cannot be PARSED is still not merged, as it was not before -- and
+    dropping it is the better of two bad options here rather than an
+    oversight: its key is derived from ``ts``, so an unparseable record has no
+    stable identity, and copying it would re-append it on every subsequent
+    merge instead of deduplicating.
+    """
+    existing: set[object] = set()
+
+    try:
+        with open(dst_path, "rb") as f:
+            for raw in strict_raw_records(f, dst_path, cap=_RECORD_CAP):
+                try:
+                    existing.add(json.loads(raw).get("ts") or raw.strip())
+                except (ValueError, TypeError):
+                    pass
+    except UnreadableRecord:
+        print(
+            f"  Notifications: SKIPPED — {_safe_name(dst_path.name)} holds a record over "
+            f"{_RECORD_CAP} bytes, so duplicates cannot be detected. "
+            "Live file left unchanged; the archive still has its copy."
+        )
+        return
+
     imported = 0
-    with open(dst_path, "a") as out, open(src_path) as f:
-        for line in f:
-            try:
-                key = json.loads(line).get("ts") or line.strip()
-                if key not in existing:
-                    out.write(line)
-                    existing.add(key)
-                    imported += 1
-            except (ValueError, TypeError):
-                pass
+    try:
+        # Binary append: the read is binary, so a text write here would
+        # re-translate the newline the record already carries (\r\n -> \r\r\n
+        # on Windows) and re-encode it in the local encoding.
+        with open(dst_path, "ab") as out, open(src_path, "rb") as f:
+            for raw in strict_raw_records(f, src_path, cap=_RECORD_CAP):
+                try:
+                    key = json.loads(raw).get("ts") or raw.strip()
+                    if key not in existing:
+                        out.write(raw)
+                        existing.add(key)
+                        imported += 1
+                except (ValueError, TypeError):
+                    pass
+    except UnreadableRecord:
+        # Whatever was appended before this point is whole records, and a
+        # re-run rebuilds `existing` from the now-larger live file, so the
+        # merge is idempotent and this is recoverable rather than corrupt.
+        print(
+            f"  Notifications: STOPPED after {imported} — {_safe_name(src_path.name)} holds a "
+            f"record over {_RECORD_CAP} bytes. Records already merged are intact; re-run "
+            "after inspecting that file to finish."
+        )
+        return
     print(f"  Notifications imported: {imported}")
 
 

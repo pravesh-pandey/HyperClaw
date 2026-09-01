@@ -1301,3 +1301,100 @@ class TestMergeRestoreLocksBeforePublish:
         monkeypatch.setattr(snapshot_mod.os, "close", _close)
         snapshot_mod._do_merge(snap, home, ["security"], allow_unpinned=bool(unpinnable_argv()))
         assert not (home / "telemetry_salt").exists()
+
+
+class TestNotificationsMergeIsBounded:
+    """#6345: the notifications merge reads two agent-writable files and writes one.
+
+    ``for line in f`` would materialise one crafted newline-free line whole.
+    The records read out of the LIVE file become the dedupe set that decides
+    what is appended back into it, so an over-cap record aborts the merge
+    instead of being skipped -- skipping would drop its key and let the merge
+    append a duplicate of a notification the user already has.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _small_cap(self, monkeypatch):
+        # raising=False so this file also RUNS against a pre-fix source, where
+        # the attribute does not exist: the tests then fail on behaviour (the
+        # duplicate that should not have been appended) rather than erroring on
+        # a missing name. Same idiom as test_session_digest's `create=True`.
+        monkeypatch.setattr(snapshot_mod, "_RECORD_CAP", 200, raising=False)
+
+    @staticmethod
+    def _pair(tmp_path, live: bytes, snap: bytes):
+        dst = tmp_path / "notifications.jsonl"
+        src = tmp_path / "snap-notifications.jsonl"
+        dst.write_bytes(live)
+        src.write_bytes(snap)
+        return src, dst
+
+    def test_over_cap_live_record_aborts_and_leaves_the_file_untouched(self, tmp_path, capsys):
+        """Red on base: base skips the junk line and appends, so dst changes."""
+        src, dst = self._pair(
+            tmp_path, b"y" * 400 + b"\n", b'{"ts":"2026-01-01","msg":"from snap"}\n'
+        )
+        before = dst.read_bytes()
+        snapshot_mod._merge_notifications(src, dst)
+        assert dst.read_bytes() == before, "live file must be untouched when dedupe is blind"
+        out = capsys.readouterr().out
+        assert "SKIPPED" in out and "Live file left unchanged" in out
+
+    def test_over_cap_snapshot_record_stops_but_keeps_what_merged(self, tmp_path, capsys):
+        """The prefix already appended is whole records, so a re-run finishes the job."""
+        src, dst = self._pair(
+            tmp_path,
+            b"",
+            b'{"ts":"a","msg":"first"}\n' + b"y" * 400 + b"\n" + b'{"ts":"c","msg":"third"}\n',
+        )
+        snapshot_mod._merge_notifications(src, dst)
+        got = [json.loads(x) for x in dst.read_bytes().splitlines() if x.strip()]
+        assert [r["ts"] for r in got] == ["a"], "records before the over-cap one must survive"
+        assert "STOPPED after 1" in capsys.readouterr().out
+
+    def test_a_normal_merge_still_dedupes(self, tmp_path, capsys):
+        src, dst = self._pair(
+            tmp_path,
+            b'{"ts":"a","msg":"have"}\n',
+            b'{"ts":"a","msg":"have"}\n{"ts":"b","msg":"new"}\n',
+        )
+        snapshot_mod._merge_notifications(src, dst)
+        got = [json.loads(x) for x in dst.read_bytes().splitlines() if x.strip()]
+        assert [r["ts"] for r in got] == ["a", "b"]
+        assert "Notifications imported: 1" in capsys.readouterr().out
+
+    def test_record_at_exactly_the_cap_still_merges(self, tmp_path):
+        """The cap is inclusive; a legitimate record at the limit is not refused."""
+        rec = {"ts": "a", "msg": ""}
+        rec["msg"] = "z" * (200 - len(json.dumps(rec).encode()))
+        raw = json.dumps(rec).encode()
+        assert len(raw) == 200
+        src, dst = self._pair(tmp_path, b"", raw + b"\n")
+        snapshot_mod._merge_notifications(src, dst)
+        assert dst.read_bytes() == raw + b"\n"
+
+    def test_non_ascii_records_round_trip_byte_identically(self, tmp_path):
+        """Records are copied as bytes, so nothing is decoded and re-encoded.
+
+        The previous reader opened both files in TEXT mode with the LOCALE
+        encoding, so on a non-UTF-8 locale every record was transcoded on the
+        way through, and the newline was re-translated on write.
+        """
+        raw = '{"ts":"a","msg":"\u00e9\u4e2d\U0001f600"}\n'.encode()
+        src, dst = self._pair(tmp_path, b"", raw)
+        snapshot_mod._merge_notifications(src, dst)
+        assert dst.read_bytes() == raw, "the merge must not transcode a record"
+
+    def test_an_undecodable_record_no_longer_kills_the_merge(self, tmp_path):
+        """Red on base: base iterates a TEXT handle, so this raises UnicodeDecodeError.
+
+        The record itself is still not merged -- it cannot be parsed, and the
+        previous reader dropped every unparseable record too -- but it no
+        longer takes the surrounding records down with it.
+        """
+        src, dst = self._pair(
+            tmp_path, b"", b'{"ts":"a","msg":"ok"}\n' + b'{"ts":"b","msg":"\xff\xfe"}\n'
+        )
+        snapshot_mod._merge_notifications(src, dst)  # must not raise
+        got = [json.loads(x) for x in dst.read_bytes().splitlines() if x.strip()]
+        assert [r["ts"] for r in got] == ["a"], "the decodable record must still merge"
