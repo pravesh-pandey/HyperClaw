@@ -588,6 +588,145 @@ def test_unknown_event_kind_is_refused(tmp_path):
         cs.append_event(OWNER, REPO, crew["id"], 1, "vibes", "…", tmp_path)
 
 
+# ── crew-level lines (a step that belongs to no issue) ──────────────────────
+#
+# The invariant these protect is the one the feature exists for: a crew that
+# checked the queue and took nothing must be able to SAY so. Before this, the
+# only way to record the cycle was to attribute it to an issue the crew never
+# acted on, so the ledger either lied or stayed silent. Both directions of the
+# pairing are asserted, because a crew-level kind carrying a number is the same
+# false attribution written the other way round.
+
+
+def test_a_crew_level_line_omits_the_number_entirely(tmp_path):
+    crew = _crew(tmp_path)
+    result = cs.record_crew_checkpoint(OWNER, REPO, crew["id"], "sweep", "queue empty", tmp_path)
+    entry = result["event"]
+    # Absent, NOT zero: a `0` is indistinguishable from a real issue number in
+    # every filter and join that keys on this field.
+    assert "number" not in entry
+    stored = cs.read_events(OWNER, REPO, tmp_path)
+    assert len(stored) == 1
+    assert "number" not in stored[0]
+    assert (stored[0]["kind"], stored[0]["text"]) == ("sweep", "queue empty")
+
+
+def test_an_item_kind_without_a_number_is_refused(tmp_path):
+    # Asserted on the shared builder, which is where the pairing lives: the public
+    # issue-line writer types `number` as `int`, so this case cannot reach it.
+    with pytest.raises(cs.CrewStoreError, match="needs an issue number"):
+        cs._event_entry("c_1", None, "claim", "claimed")
+
+
+def test_a_crew_level_kind_with_a_number_is_refused(tmp_path):
+    crew = _crew(tmp_path)
+    with pytest.raises(cs.CrewStoreError, match="takes no issue number"):
+        cs.append_event(OWNER, REPO, crew["id"], 7, "sweep", "queue empty", tmp_path)
+
+
+def test_only_one_writer_shapes_a_numberless_line(tmp_path):
+    """`append_event` must NOT be a second way to write a crew-level line.
+
+    Coalescing has to read the crew's tail and decide whether to append at all,
+    under one lock hold, so the crew-level path cannot delegate to
+    `append_event`. That left two writers for the same shape, one of which no
+    production code called -- so the issue-line writer now requires a number and
+    the pairing check in the shared builder refuses a crew-level kind through it.
+    """
+    crew = _crew(tmp_path)
+    with pytest.raises(cs.CrewStoreError, match="takes no issue number"):
+        cs.append_event(OWNER, REPO, crew["id"], 1, cs.CREW_LEVEL_EVENT_KIND, "x", tmp_path)
+    # And the one legitimate writer still produces the same shape the builder makes.
+    built = cs._event_entry(crew["id"], None, cs.CREW_LEVEL_EVENT_KIND, "queue empty")
+    written = cs.record_crew_checkpoint(
+        OWNER, REPO, crew["id"], cs.CREW_LEVEL_EVENT_KIND, "queue empty", tmp_path
+    )["event"]
+    assert set(built) == set(written)
+
+
+def test_a_numbered_line_keeps_its_historical_id(tmp_path):
+    """The id formula for a NUMBERED line must not have changed.
+
+    It is content-addressed and drives merge-on-read dedupe, so a new formula
+    would give every existing line a fresh id and silently defeat the dedupe for
+    the whole ledger. Asserted against the literal formula rather than against a
+    golden string so the test does not need a frozen clock.
+    """
+    crew = _crew(tmp_path)
+    entry = cs.append_event(OWNER, REPO, crew["id"], 4, "claim", "claimed", tmp_path)
+    assert entry["id"] == cs._event_id(entry["ts"], crew["id"], 4, "claim", "claimed")
+    # And the two families cannot collide: the numberless variant renders the
+    # number as the empty string, which no real number produces.
+    assert cs._event_id(entry["ts"], crew["id"], None, "sweep", "x") != cs._event_id(
+        entry["ts"], crew["id"], 0, "sweep", "x"
+    )
+
+
+def test_record_crew_checkpoint_writes_one_line_and_no_item(tmp_path):
+    crew = _crew(tmp_path)
+    result = cs.record_crew_checkpoint(
+        OWNER, REPO, crew["id"], "sweep", "checked 42 open issues, took none", tmp_path
+    )
+    # Same envelope as commit_work_progress, so the write route answers one shape.
+    assert {"item", "event", "skip"} <= set(result)
+    assert result["item"] is None and result["skip"] is None
+    assert result["event"]["kind"] == "sweep"
+    assert result["coalesced"] is False
+    # No work item was created, so nothing consumes a work slot.
+    assert cs.list_work_items(OWNER, REPO, crew["id"], tmp_path) == []
+
+
+def test_consecutive_sweeps_coalesce_instead_of_running_away(tmp_path):
+    """An idle crew must not bury its own work log.
+
+    A sweep is a recurring latest-value fact and the crew is nudged on a timer, so
+    one line per cycle would be an unbounded run. Every ledger read is capped and
+    drops the OLDEST line first, so a few hundred idle cycles would push the real
+    history out of the log the feature exists to make honest.
+    """
+    crew = _crew(tmp_path)
+    first = cs.record_crew_checkpoint(OWNER, REPO, crew["id"], "sweep", "queue empty", tmp_path)
+    again = cs.record_crew_checkpoint(OWNER, REPO, crew["id"], "sweep", "still empty", tmp_path)
+
+    assert first["coalesced"] is False
+    assert again["coalesced"] is True
+    # The SECOND call is answered with the FIRST line, so the timestamp marks when
+    # the idle stretch began rather than when it was last observed.
+    assert again["event"]["id"] == first["event"]["id"]
+    assert again["event"]["text"] == "queue empty"
+    assert len(cs.read_events(OWNER, REPO, tmp_path)) == 1
+
+
+def test_a_sweep_after_real_work_is_written(tmp_path):
+    # Coalescing keys on the crew's newest line, so the transition back into idle
+    # is recorded -- otherwise the guard would swallow every sweep after the first.
+    crew = _crew(tmp_path)
+    cs.record_crew_checkpoint(OWNER, REPO, crew["id"], "sweep", "queue empty", tmp_path)
+    cs.append_event(OWNER, REPO, crew["id"], 7, "claim", "took #7", tmp_path)
+    third = cs.record_crew_checkpoint(OWNER, REPO, crew["id"], "sweep", "empty again", tmp_path)
+
+    assert third["coalesced"] is False
+    assert [e["kind"] for e in cs.read_events(OWNER, REPO, tmp_path)] == ["sweep", "claim", "sweep"]
+
+
+def test_one_crews_sweep_does_not_coalesce_anothers(tmp_path):
+    # The ledger file is repo-wide, so the tail read must be crew-scoped or one
+    # crew's idle line would silently swallow another crew's.
+    a = _crew(tmp_path, name="Andromeda")
+    b = _crew(tmp_path, name="Whirlpool")
+    cs.record_crew_checkpoint(OWNER, REPO, a["id"], "sweep", "a is empty", tmp_path)
+    theirs = cs.record_crew_checkpoint(OWNER, REPO, b["id"], "sweep", "b is empty", tmp_path)
+
+    assert theirs["coalesced"] is False
+    assert len(cs.read_events(OWNER, REPO, tmp_path)) == 2
+
+
+def test_a_non_crew_level_kind_is_refused_by_the_checkpoint_writer(tmp_path):
+    crew = _crew(tmp_path)
+    with pytest.raises(cs.CrewStoreError, match="not a crew-level step"):
+        cs.record_crew_checkpoint(OWNER, REPO, crew["id"], "claim", "took it", tmp_path)
+
+
 # ── phase classification ────────────────────────────────────────────────────
 
 
