@@ -1727,6 +1727,229 @@ def sanitized_seed_config(seed_dir: Path) -> dict | None:
     return data
 
 
+# --------------------------------------------------------------------------- #
+# Seed scenarios — the named half of ``--seed``. A scenario is a fixture shipped
+# as package data (``kiro_crew/tests_fixtures/<name>/``) that populates the pod's
+# whole isolated HOME, where the original ``--seed <dir>`` form contributes only a
+# sanitized ``config.json``. Both spellings share the one ``SEED=`` env key, so a
+# re-``up`` with the other form replaces the recorded value instead of leaving two
+# keys to disagree (``write_env_file`` merges and cannot delete).
+# --------------------------------------------------------------------------- #
+
+# A bare token is a SCENARIO; anything path-shaped stays a DIRECTORY. The rule is
+# syntactic on purpose: it is decided identically by the control plane (``pod up``,
+# which must reject an unknown name before starting a unit) and by ``boot`` in the
+# pod's own process, with no filesystem lookup to disagree about. Every documented
+# directory form carries a separator or a leading ``~``/``.``
+# (``--seed ~/.kiro/crew``, ``--seed /abs/path``, ``--seed ./rel``), so this
+# reinterprets only a bare relative directory name — which now fails loud naming
+# both readings rather than silently seeding nothing.
+_SCENARIO_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,60}$")
+
+
+def is_scenario_ref(value: str) -> bool:
+    """Whether ``--seed <value>`` names a fixture rather than a directory."""
+    if not value or value.startswith(("~", ".")):
+        return False
+    if "/" in value or "\\" in value or os.sep in value:
+        return False
+    return bool(_SCENARIO_RE.match(value))
+
+
+def seed_scenarios() -> list[tuple[str, str]]:
+    """``[(name, one-line description)]`` for every shipped fixture, sorted."""
+    from kiro_crew import seed as seed_mod
+
+    return [(name, seed_mod.fixture_summary(name)) for name in seed_mod.available_fixtures()]
+
+
+def resolve_seed_scenario(value: str) -> str:
+    """Validate that *value* names a shipped fixture, or raise :class:`PodError`.
+
+    Fails loud with the available names because the alternative is worse than a
+    typo: a scenario silently treated as a directory path seeds nothing, and the
+    pod comes up blank and healthy — an agent then reads that empty dashboard as
+    the feature under test being broken. The message also names the directory
+    escape hatch, since a bare relative dir name lands here (see ``_SCENARIO_RE``).
+    """
+    from kiro_crew import seed as seed_mod
+
+    available = seed_mod.available_fixtures()
+    if value in available:
+        return value
+    listed = ", ".join(available) if available else "(none)"
+    raise PodError(
+        f"unknown seed scenario {value!r}. Available scenarios: {listed}.\n"
+        f"  Describe them:            kirocrew pod scenarios\n"
+        f"  Seed from a DIRECTORY instead (a path, not a name): "
+        f"--seed ./{value} or --seed /abs/path/{value}"
+    )
+
+
+def seed_home_from_scenario(cfg: PodConfig, name: str, scenario: str) -> bool:
+    """Populate pod *name*'s isolated HOME from fixture *scenario*.
+
+    Returns True when the fixture was copied, False when the HOME already holds
+    state and was left alone. That second case is not an error and is the common
+    one: ``boot`` runs on every start AND on every ``Restart=on-failure`` re-exec,
+    so re-seeding would wipe the sessions and logs of a pod that merely crashed
+    once — the evidence an operator is podding the worktree to look at.
+
+    Delegates the copy to :func:`kiro_crew.seed.seed` rather than reimplementing
+    it, so a scenario inherits that module's guardrails whole (name traversal, the
+    protected live-home refusal, the symlink and not-a-directory cases). ``seed``
+    reads its target from ``$KIROCREW_HOME``, which in this process is the CONTROL
+    plane's, so the variable is pinned to the pod's HOME across the call and
+    restored after; the gateway's own environment is built separately by
+    :func:`build_pod_env` and does not inherit from here.
+    """
+    from kiro_crew.seed import SeedError, seed
+
+    home_dir = cfg.home_dir(name)
+    if home_dir.exists() and any(home_dir.iterdir()):
+        return False
+    previous = os.environ.get("KIROCREW_HOME")
+    os.environ["KIROCREW_HOME"] = str(home_dir)
+    try:
+        seed(scenario)
+    except SeedError as exc:
+        # Re-raise in the pod vocabulary so `boot` and `pod up` render it as the
+        # documented one-line `pod: …` refusal instead of leaking a second
+        # error dialect into pod output.
+        raise PodError(f"seeding pod {name!r} from scenario {scenario!r} failed: {exc}") from exc
+    finally:
+        if previous is None:
+            os.environ.pop("KIROCREW_HOME", None)
+        else:
+            os.environ["KIROCREW_HOME"] = previous
+    return True
+
+
+def sanitize_home_config(home_dir: Path) -> None:
+    """Force ``enabled=False`` on every :data:`SEED_DISABLED_SECTIONS` section of
+    an already-written ``<home_dir>/config.json``.
+
+    A scenario fixture ships its own ``config.json``, and ``write_pod_config`` is
+    create-only, so without this step the fixture's config would reach the pod
+    unfiltered — the one thing the ``--seed <dir>`` path has always refused to
+    allow. Same deny-by-default roster and the same reasoning as
+    :func:`sanitized_seed_config`; this is its in-place twin, applied after the
+    tree is on disk rather than while copying one file.
+
+    Best-effort by design: an absent or unparseable config leaves nothing to
+    tighten, and refusing to boot over it would turn a malformed fixture into a
+    5s restart loop (see :func:`target_supports_flag` for why that failure mode
+    is the one to avoid). The enforcement of record is ``--no-tunnel`` on the boot
+    argv, re-asserted at every exec; this is defense in depth.
+    """
+    cfg_file = home_dir / "config.json"
+    try:
+        data = json.loads(cfg_file.read_text())
+    except (OSError, ValueError):
+        return
+    if not isinstance(data, dict):
+        return
+    for section in SEED_DISABLED_SECTIONS:
+        if not isinstance(data.get(section), dict):
+            data[section] = {}
+        data[section]["enabled"] = False
+    try:
+        atomic_write(cfg_file, json.dumps(data, indent=2), restrict_to_owner=True)
+    except OSError:
+        return
+
+
+# --------------------------------------------------------------------------- #
+# Authenticated API call against a running pod (``kirocrew pod api``). The token
+# is minted through `mint_token`, so the pod-ownership proof that gates every
+# other credential path gates this one too — an agent never reads
+# ``.local_secret`` itself.
+# --------------------------------------------------------------------------- #
+
+#: Verbs ``pod api`` accepts. A closed set so a typo is refused by name instead
+#: of being sent to the gateway as an unknown method and read back as a 405.
+API_METHODS: tuple[str, ...] = ("GET", "POST", "PUT", "PATCH", "DELETE")
+
+#: Read timeout for one ``pod api`` call. Generous next to `_probe_health`'s 3s:
+#: this reaches real handlers (a spawn, a memory search) rather than a liveness
+#: endpoint, while still bounding a hung request — a loopback call that can hang
+#: forever is never what a caller wants.
+API_TIMEOUT_SECS = 30
+
+
+def api_path(path: str) -> str:
+    """Normalize the ``<path>`` argument of ``pod api`` to a rooted API path.
+
+    Accepts ``sessions``, ``/sessions``, ``api/sessions``, ``/api/sessions`` and a
+    full ``http://127.0.0.1:<port>/api/...`` URL, because all five are what a
+    caller has in hand (the last is what ``pod url`` and ``pod up --json``
+    printed). Query strings survive untouched.
+    """
+    raw = path.strip()
+    if "://" in raw:
+        raw = urllib.parse.urlsplit(raw)._replace(scheme="", netloc="").geturl()
+    if not raw.startswith("/"):
+        raw = "/" + raw
+    if not raw.startswith("/api/") and raw != "/api":
+        raw = "/api" + raw
+    return raw
+
+
+def pod_api(
+    cfg: PodConfig,
+    name: str,
+    method: str,
+    path: str,
+    *,
+    data: str = "",
+    timeout: int = API_TIMEOUT_SECS,
+) -> tuple[int, str]:
+    """Call ``method path`` on pod *name*'s gateway; return ``(status, body)``.
+
+    Raises :class:`PodError` when the pod is not up (naming the command that
+    would bring it up) or when the request never completed. A non-2xx STATUS is
+    returned normally rather than raised: the body is the useful part of a 4xx
+    from an API under test, and the caller decides the exit code.
+    """
+    if method not in API_METHODS:
+        raise PodError(f"unsupported method {method!r} (expected one of: {', '.join(API_METHODS)})")
+    if not is_active(cfg, name):
+        raise PodError(
+            f"pod {name!r} is not running, so there is nothing to call.\n"
+            f"  Start it:   kirocrew pod up {name}\n"
+            f"  What is up: kirocrew pod ls"
+        )
+    port = derive_port(cfg, name)
+    # `mint_token` carries the ownership proof: it refuses outright when the port
+    # is provably somebody else's and withholds the credential when ownership
+    # cannot be proven, so this call can never authenticate against a foreign
+    # gateway holding the derived port.
+    token = mint_token(cfg, name)
+    url = f"http://127.0.0.1:{port}{api_path(path)}"
+    headers = {"Authorization": f"Bearer {token}"}
+    body: bytes | None = None
+    if data:
+        body = data.encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=body, headers=headers, method=method)
+    try:
+        # Loopback-only call to this pod's own gateway; the URL is derived from
+        # the pod's port plus a caller-supplied PATH (never a caller-supplied
+        # host), so the dynamic-URL SSRF audit rule is a false positive here.
+        with loopback_urlopen(req, timeout=timeout) as resp:  # nosemgrep
+            return resp.status, resp.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as exc:
+        # A 4xx/5xx IS a response — read its body and hand both back, so the
+        # caller can print the gateway's own error rather than a transport one.
+        return exc.code, exc.read().decode("utf-8", "replace")
+    except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
+        raise PodError(
+            f"{method} {api_path(path)} on pod {name!r} (:{port}) did not complete: {exc}\n"
+            f"  Is it healthy? kirocrew pod status {name}\n"
+            f"  Its logs:      kirocrew pod logs {name}"
+        ) from exc
+
+
 def build_pod_env(cfg: PodConfig, home_dir: Path, port: int, checkout: Path) -> dict[str, str]:
     """Construct the isolated gateway environment for a pod.
 
@@ -2231,7 +2454,37 @@ def boot(cfg: PodConfig, name: str) -> int:
 
     # Write the pod's isolated, tunnel-disabled config with owner-only perms.
     # Creates the HOME (0o700) too. Never copies DB/sessions/crons.
-    write_pod_config(home_dir, seed)
+    #
+    # A SCENARIO seed populates the WHOLE home from a shipped fixture, so it has
+    # to land first: `write_pod_config` is create-only, and a config.json it wrote
+    # would make `seed`'s non-empty guardrail refuse the tree it is meant to
+    # unpack. Ordering it here — after the checkout/port/dist preconditions, before
+    # the gateway exec below — is what makes the seeded state the state the gateway
+    # opens, rather than something layered onto a home it has already booted.
+    scenario = seed if is_scenario_ref(seed) else ""
+    if scenario:
+        try:
+            fresh = seed_home_from_scenario(cfg, name, scenario)
+        except PodError as exc:
+            # Refuse rather than boot blank. Unlike the flag-probe case, a broken
+            # seed is not a graceful degradation: the pod would come up healthy
+            # and EMPTY, and a caller who asked for populated state would read
+            # that emptiness as the feature under test failing.
+            print(f"FATAL: {exc}")
+            return 3
+        print(
+            f"kirocrew-pod: seeded home from scenario {scenario!r}"
+            if fresh
+            else f"kirocrew-pod: home already populated — scenario {scenario!r} not re-applied"
+        )
+    # ``seed`` is passed through only for the DIRECTORY form; a scenario has
+    # already written its own config.json, which this call then leaves alone.
+    write_pod_config(home_dir, "" if scenario else seed)
+    if scenario:
+        # The fixture's own config.json survived the create-only call above, so
+        # apply the channel/tunnel deny list to it here — the guarantee the
+        # ``--seed <dir>`` path gets from ``sanitized_seed_config`` while copying.
+        sanitize_home_config(home_dir)
 
     print(f"kirocrew-pod: name={name} port={port} home={home_dir} checkout={checkout}")
 

@@ -1,0 +1,7 @@
+schema-version: 2026-04-28
+fixture-name: crons-active
+description: |
+  Four cron jobs in one home: two active on different expressions, one
+  paused, and one script cron pointing at a shipped script path. Enough for the
+  Schedules panel, the enabled/paused filter, and the message-vs-script rendering
+  split to all be non-empty on first boot.
