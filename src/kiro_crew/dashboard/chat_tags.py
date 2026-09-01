@@ -22,6 +22,7 @@ from typing import Any, Callable, TypeVar
 from aiohttp import web
 
 from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
+from kiro_crew.dashboard.chat_utils import slot_history_key
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.loop_lock import LoopBoundLock
@@ -407,9 +408,21 @@ async def api_chat_tag_delete(request: web.Request) -> web.Response:
         # the next load; mark the slot dirty so the periodic flush retries.
         for slot in state._slots.values():
             if tid in slot.tags:
+                # Pin the write to the transcript this iteration's membership
+                # check covered: the save awaits inside the loop, so a rebind
+                # can land mid-persist and the save would otherwise resolve
+                # its target from the moved routing at write time. No await
+                # between this capture and the strip below.
+                authorized_history_key = slot_history_key(slot)
                 slot.tags = [t for t in slot.tags if t != tid]
                 try:
-                    await save_slot_off_loop(state, slot, force=True, best_effort=False)
+                    applied = await save_slot_off_loop(
+                        state,
+                        slot,
+                        force=True,
+                        best_effort=False,
+                        expected_history_key=authorized_history_key,
+                    )
                 except Exception:
                     slot._dirty = True
                     logger.warning(
@@ -418,6 +431,21 @@ async def api_chat_tag_delete(request: web.Request) -> web.Response:
                         getattr(slot, "key", "?"),
                         exc_info=True,
                     )
+                else:
+                    if not applied:
+                        # Refused without writing (session permanently deleted
+                        # or rebound mid-persist). The in-memory strip stands —
+                        # the id is already gone from the vocabulary — so mark
+                        # dirty and let the periodic flush persist wherever the
+                        # slot now routes; a dangling id left on the old
+                        # transcript is pruned on the next load.
+                        slot._dirty = True
+                        logger.warning(
+                            "tag delete: slot strip save refused for %s "
+                            "(session deleted or rebound); marked dirty for "
+                            "periodic-flush retry",
+                            getattr(slot, "key", "?"),
+                        )
 
         # ── Best-effort cleanup: strip the deleted id from folders ───────
         # A folder can carry tags (copied onto new chats filed into it); the
@@ -488,6 +516,14 @@ async def api_chat_slot_tags(request: web.Request) -> web.Response:
     slot = state._slots.get(name)
     if not slot:
         return web.json_response({"error": "not found", "code": "not_found"}, status=404)
+    # Capture the transcript key the lookup above just covered, BEFORE the
+    # body-parse and lock awaits: ``linked_session_key`` is rebound on
+    # already-live slots with no ``running`` gate (cron completions, workflow
+    # injections), so a slow caller can be authorized against its own session
+    # and land on somebody else's conversation. The re-check below and the
+    # save's expected_history_key pin together keep this request's write on
+    # the transcript it was authorized against.
+    authorized_history_key = slot_history_key(slot)
     body, body_err = await read_bounded_json(request)
     if body_err is not None:
         return body_err
@@ -504,8 +540,33 @@ async def api_chat_slot_tags(request: web.Request) -> web.Response:
         for tid in raw_ids:
             if isinstance(tid, str) and tid in valid_ids and tid not in new_tags:
                 new_tags.append(tid)
+        # Re-authorize after the awaits above (body parse, lock acquisition):
+        # the same slot OBJECT must still be registered under the name, and
+        # its routing must still resolve to the transcript captured before
+        # the first await — a rebind in either window means this request's
+        # authorization no longer covers the write target.
+        if state._slots.get(name) is not slot or slot_history_key(slot) != authorized_history_key:
+            return web.json_response(
+                {"error": "session was deleted or rebound", "code": "session_gone"},
+                status=409,
+            )
+        prior_tags = slot.tags
         slot.tags = new_tags
-        await save_slot_off_loop(state, slot, force=True)
+        if not await save_slot_off_loop(
+            state, slot, force=True, expected_history_key=authorized_history_key
+        ):
+            # Refused without writing: the session was permanently deleted or
+            # rebound mid-persist. Roll back the live field — but only while
+            # it still holds THIS request's value: the write span awaits, so
+            # a concurrent writer may have committed a newer value that an
+            # unconditional restore would erase (the same guard
+            # _restore_unfiled applies to its rollback).
+            if slot.tags == new_tags:
+                slot.tags = prior_tags
+            return web.json_response(
+                {"error": "session was deleted or rebound", "code": "session_gone"},
+                status=409,
+            )
 
     state.push_slots_update()
     sel().log_api_access(
@@ -832,6 +893,11 @@ async def api_chat_slot_drop(request: web.Request) -> web.Response:
     slot = state._slots.get(name)
     if not slot:
         return web.json_response({"error": "not found", "code": "not_found"}, status=404)
+    # Capture the transcript key the lookup above just covered, BEFORE the
+    # body-parse await — the same rebind window PUT /tags documents. The
+    # re-check below and the save's expected_history_key pin together keep
+    # this request's write on the transcript it was authorized against.
+    authorized_history_key = slot_history_key(slot)
     body, body_err = await read_bounded_json(request)
     if body_err is not None:
         return body_err
@@ -879,8 +945,46 @@ async def api_chat_slot_drop(request: web.Request) -> web.Response:
         )
     target_id = status_tags[0]["id"]
     kept = [t for t in slot.tags if t in tag_index and not tag_index[t].get("status")]
-    slot.tags = kept + [target_id]
-    await save_slot_off_loop(state, slot, force=True)
+    # Re-authorize after the body-parse await: same slot OBJECT still
+    # registered under the name, routing still on the transcript captured
+    # before the await. No await between this check and the save dispatch;
+    # the save's pin covers the persist window itself.
+    if state._slots.get(name) is not slot or slot_history_key(slot) != authorized_history_key:
+        sel().log_api_access(
+            caller="dashboard",
+            operation="chat.slot_drop",
+            outcome="rejected",
+            source="dashboard",
+            resources=f"{name}->{column_id}",
+            error="session was deleted or rebound",
+        )
+        return web.json_response(
+            {"ok": False, "reason": "session was deleted or rebound", "tags": slot.tags}
+        )
+    prior_tags = slot.tags
+    written_tags = kept + [target_id]
+    slot.tags = written_tags
+    if not await save_slot_off_loop(
+        state, slot, force=True, expected_history_key=authorized_history_key
+    ):
+        # Refused without writing: the session was permanently deleted or
+        # rebound mid-persist. Roll back the live field — but only while it
+        # still holds THIS request's value, so a concurrent writer's newer
+        # commit is not erased — and report the drop as rejected, matching
+        # this endpoint's rejection shape (the card stays where it was).
+        if slot.tags == written_tags:
+            slot.tags = prior_tags
+        sel().log_api_access(
+            caller="dashboard",
+            operation="chat.slot_drop",
+            outcome="rejected",
+            source="dashboard",
+            resources=f"{name}->{column_id}",
+            error="session was deleted or rebound",
+        )
+        return web.json_response(
+            {"ok": False, "reason": "session was deleted or rebound", "tags": slot.tags}
+        )
     state.push_slots_update()
     sel().log_api_access(
         caller="dashboard",

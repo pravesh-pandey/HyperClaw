@@ -14,7 +14,7 @@ from aiohttp import web
 
 from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
 from kiro_crew.dashboard.chat_tags import tags_write_lock, validate_folder_tag_ids
-from kiro_crew.dashboard.chat_utils import effective_session_key
+from kiro_crew.dashboard.chat_utils import effective_session_key, slot_history_key
 from kiro_crew.dashboard.create_rate_limit import FOLDER_CREATE, allow_create
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.dashboard.token_auth import caller_names_a_missing_slot, derive_caller_app
@@ -915,8 +915,29 @@ async def api_chat_folder_delete(request: web.Request) -> web.Response:
     for slot in state._slots.values():
         if slot.folder_id == fid:
             unfiled.append((slot, slot.folder_id))
+            # Pin the write to the transcript this iteration's membership
+            # check covered: the save awaits inside the loop, so a rebind can
+            # land mid-persist and the save would otherwise resolve its
+            # target from the moved routing at write time. No await between
+            # this capture and the unfile below.
+            authorized_history_key = slot_history_key(slot)
             slot.folder_id = ""
-            await save_slot_off_loop(state, slot, force=True)
+            if not await save_slot_off_loop(
+                state, slot, force=True, expected_history_key=authorized_history_key
+            ):
+                # Refused without writing (session permanently deleted or
+                # rebound mid-persist). The in-memory unfile stands — the
+                # folder is being removed — so mark dirty and let the
+                # periodic flush persist wherever the slot now routes; a
+                # dangling folder_id left on the old transcript is ignored
+                # on the next load.
+                slot._dirty = True
+                logger.warning(
+                    "folder delete: unfile save refused for %s "
+                    "(session deleted or rebound); marked dirty for "
+                    "periodic-flush retry",
+                    getattr(slot, "key", "?"),
+                )
 
     async def _restore_unfiled() -> None:
         for slot, previous in unfiled:
@@ -927,9 +948,18 @@ async def api_chat_folder_delete(request: web.Request) -> web.Response:
             # slot back into the folder this request was trying to delete.
             if slot.folder_id:
                 continue
+            # Same pin as the unfile: no await between this capture and the
+            # restore below, so the rollback write cannot land on a
+            # transcript this slot was rebound to mid-restore.
+            authorized_history_key = slot_history_key(slot)
             slot.folder_id = previous
             try:
-                await save_slot_off_loop(state, slot, force=True)
+                applied = await save_slot_off_loop(
+                    state,
+                    slot,
+                    force=True,
+                    expected_history_key=authorized_history_key,
+                )
             except Exception:
                 # Best-effort restore; a slot left unfiled renders at the top
                 # level, which the sidebar handles, so keep restoring the rest.
@@ -939,6 +969,18 @@ async def api_chat_folder_delete(request: web.Request) -> web.Response:
                     previous,
                     exc_info=True,
                 )
+            else:
+                if not applied:
+                    # Refused without writing (session deleted or rebound).
+                    # Keep the restored live field and mark dirty so the
+                    # periodic flush persists it wherever the slot now routes.
+                    slot._dirty = True
+                    logger.warning(
+                        "folder delete rollback: restore save refused for %s "
+                        "(session deleted or rebound); marked dirty for "
+                        "periodic-flush retry",
+                        getattr(slot, "key", "?"),
+                    )
         state.push_slots_update()
 
     def _remove(folders: list[dict[str, Any]]) -> tuple[bool, None]:
@@ -1024,6 +1066,14 @@ async def api_chat_slot_folder(request: web.Request) -> web.Response:
             ),
         )
         return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+    # Capture the transcript key the ownership decision above just covered,
+    # BEFORE the body-parse await: ``linked_session_key`` is rebound on
+    # already-live slots with no ``running`` gate (cron completions, workflow
+    # injections), so a slow caller can be authorized against its own session
+    # and land on somebody else's conversation. The re-check below and the
+    # save's expected_history_key pin together keep this request's write on
+    # the transcript it was authorized against.
+    authorized_history_key = slot_history_key(slot)
     try:
         body = await request.json()
     except Exception:
@@ -1031,7 +1081,17 @@ async def api_chat_slot_folder(request: web.Request) -> web.Response:
     folder_id = str(body.get("folder_id") or "")
     if folder_id and not any(f["id"] == folder_id for f in state._folders):
         return web.json_response({"error": "folder not found"}, status=400)
+    # Re-authorize after the body-parse await: same slot OBJECT still
+    # registered under the name, routing still on the transcript captured
+    # before the await. No await between this check and the mutation below;
+    # the _unhide_folder and persist awaits after it are covered by the
+    # save's pin.
+    if state._slots.get(name) is not slot or slot_history_key(slot) != authorized_history_key:
+        return web.json_response(
+            {"error": "session was deleted or rebound", "code": "session_gone"}, status=409
+        )
     previous = slot.folder_id
+    previous_changed = slot._folder_changed
     if folder_id != slot.folder_id:
         slot._folder_changed = True  # re-inject [FOLDER] breadcrumb on next turn
     slot.folder_id = folder_id
@@ -1041,11 +1101,25 @@ async def api_chat_slot_folder(request: web.Request) -> web.Response:
     # placement into a folder that no longer exists.
     if not await _unhide_folder(state, folder_id):
         slot.folder_id = previous
-        slot._folder_changed = False
+        slot._folder_changed = previous_changed
         return web.json_response(
             {"error": "folder not found", "code": "folder_not_found"}, status=400
         )
-    await save_slot_off_loop(state, slot, force=True)
+    if not await save_slot_off_loop(
+        state, slot, force=True, expected_history_key=authorized_history_key
+    ):
+        # Refused without writing: the session was permanently deleted or
+        # rebound mid-persist. Roll back the live fields — but only while
+        # they still hold THIS request's value: the write span awaits, so a
+        # concurrent writer may have committed a newer placement that an
+        # unconditional restore would erase (the same guard _restore_unfiled
+        # applies to its rollback).
+        if slot.folder_id == folder_id:
+            slot.folder_id = previous
+            slot._folder_changed = previous_changed
+        return web.json_response(
+            {"error": "session was deleted or rebound", "code": "session_gone"}, status=409
+        )
     state.push_slots_update()
     source, caller = _audit_origin(request)
     sel().log_api_access(
@@ -1066,12 +1140,38 @@ async def api_chat_slot_pin(request: web.Request) -> web.Response:
     slot = state._slots.get(name)
     if not slot:
         return web.json_response({"error": "not found"}, status=404)
+    # Capture the transcript key the lookup above just covered, BEFORE the
+    # body-parse await — the same rebind window api_chat_slot_folder
+    # documents. The re-check below and the save's expected_history_key pin
+    # together keep this request's write on the transcript it was authorized
+    # against.
+    authorized_history_key = slot_history_key(slot)
     try:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
-    slot.pinned = bool(body.get("pinned", False))
-    await save_slot_off_loop(state, slot, force=True)
+    # Re-authorize after the body-parse await: same slot OBJECT still
+    # registered under the name, routing still on the transcript captured
+    # before the await. No await between this check and the save dispatch.
+    if state._slots.get(name) is not slot or slot_history_key(slot) != authorized_history_key:
+        return web.json_response(
+            {"error": "session was deleted or rebound", "code": "session_gone"}, status=409
+        )
+    prior_pinned = slot.pinned
+    new_pinned = bool(body.get("pinned", False))
+    slot.pinned = new_pinned
+    if not await save_slot_off_loop(
+        state, slot, force=True, expected_history_key=authorized_history_key
+    ):
+        # Refused without writing: the session was permanently deleted or
+        # rebound mid-persist. Roll back the live field — but only while it
+        # still holds THIS request's value, so a concurrent writer's newer
+        # commit is not erased.
+        if slot.pinned == new_pinned:
+            slot.pinned = prior_pinned
+        return web.json_response(
+            {"error": "session was deleted or rebound", "code": "session_gone"}, status=409
+        )
     state.push_slots_update()
     sel().log_api_access(
         caller="dashboard",
@@ -1094,6 +1194,12 @@ async def api_chat_slot_mode(request: web.Request) -> web.Response:
     slot = state._slots.get(name)
     if not slot:
         return web.json_response({"error": "not found"}, status=404)
+    # Capture the transcript key the lookup above just covered, BEFORE the
+    # body-parse and busy-check awaits — the same rebind window
+    # api_chat_slot_folder documents. The re-check before the mutation and
+    # the save's expected_history_key pin together keep this request's write
+    # on the transcript it was authorized against.
+    authorized_history_key = slot_history_key(slot)
     # App ownership (App Kit §5.2) — the same deny-by-default rule api_chat_send
     # and api_chat_slot_create apply, and it matters HERE because the mode
     # decides which execution model a session runs under: an app holding
@@ -1196,12 +1302,35 @@ async def api_chat_slot_mode(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "cannot switch mode while session is running"}, status=409
         )
+    # Re-authorize after the awaits above (body parse, busy probes): same
+    # slot OBJECT still registered under the name, routing still on the
+    # transcript captured before the first await. No await between this
+    # check and the save dispatch; the persist window itself is covered by
+    # the save's expected_history_key pin.
+    if state._slots.get(name) is not slot or slot_history_key(slot) != authorized_history_key:
+        return web.json_response(
+            {"error": "session was deleted or rebound", "code": "session_gone"}, status=409
+        )
+    prior_mode = slot.mode
+    prior_auto_run = getattr(slot, "_auto_run", False)
     slot.mode = mode
     # Clear orchestrator auto-run flag when leaving orchestrator mode to
     # prevent stale "Go All" state from triggering on re-entry.
     if mode != "orchestrator" and getattr(slot, "_auto_run", False):
         slot._auto_run = False
-    await save_slot_off_loop(state, slot, force=True)
+    if not await save_slot_off_loop(
+        state, slot, force=True, expected_history_key=authorized_history_key
+    ):
+        # Refused without writing: the session was permanently deleted or
+        # rebound mid-persist. Roll back the live fields — but only while
+        # the mode still holds THIS request's value, so a concurrent
+        # writer's newer commit is not erased.
+        if slot.mode == mode:
+            slot.mode = prior_mode
+            slot._auto_run = prior_auto_run
+        return web.json_response(
+            {"error": "session was deleted or rebound", "code": "session_gone"}, status=409
+        )
     state.push_slots_update()
     sel().log_api_access(
         caller="dashboard",
