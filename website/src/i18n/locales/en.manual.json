@@ -2377,6 +2377,26 @@
       "new_sessions_start_with_this_agent": "New sessions start with this agent",
       "set_default_agent": "Set <agent/> as default agent for new sessions"
     },
+    "modelEffortDropdown": {
+      "backend_unavailable": "This provider is unavailable on this machine.",
+      "backend_unavailable_with_command": "This provider is unavailable on this machine. Install with: {{command}}",
+      "claude_code": "Claude Code",
+      "codex": "Codex",
+      "could_not_load_providers": "Could not load providers.",
+      "external_adapter_disclosure": "External adapters use their own permissions and start without Crew MCP tools. Tools pre-approved in their configuration can bypass Crew approval and audit controls.",
+      "installed_restart_required": "Installed on this machine, but this gateway must restart before it can be used.",
+      "invalid_backend": "This provider is not selectable on this build.",
+      "kas_kiro_agent": "KAS (kiro-agent)",
+      "kiro_cli": "Kiro CLI",
+      "opencode": "OpenCode",
+      "same_as_chat": "Same as chat",
+      "loading_providers": "Loading providers…",
+      "missing_components": "Missing on this machine: {{components}}",
+      "missing_components_with_command": "Missing on this machine: {{components}}. Install with: {{command}}",
+      "provider": "Provider",
+      "provider_list": "Provider list",
+      "providers": "Providers"
+    },
     "agentSkillsEditor": {
       "edit_agent_config_to_change_mapping": "{{path}} — edit the agent config file to change this mapping",
       "remove": "Remove {{name}}",
@@ -3624,10 +3644,6 @@
     },
     "developerPage": {
       "tabs": {
-        "agentBackend": {
-          "description": "Which agent new sessions start — Kiro CLI, Claude Code, or KAS",
-          "label": "Agent Backend"
-        },
         "archive": {
           "description": "Rotated/compacted session history (7-day retention)",
           "label": "Archive"
@@ -4575,6 +4591,7 @@
         "model_for_spawned_sub_agents": "Model for spawned sub-agents.",
         "role_model_auto_hint": "'Auto' lets the provider pick — it does not inherit your Default Model. Pin a model to run this work on it.",
         "failed_to_save_role_model": "Failed to save role model",
+        "failed_to_save_provider": "Failed to save provider",
         "disabled_by_instance_config_tips_enabled_false": "Disabled by instance config (tips_enabled: false)",
         "enter_for_newline": "Enter for newline",
         "enter_sends": "Enter sends",

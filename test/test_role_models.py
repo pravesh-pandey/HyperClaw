@@ -232,7 +232,7 @@ class TestValidateRoleModel:
     def test_rejects_provider_display_only_key(self, monkeypatch) -> None:
         from kiro_crew.dashboard.handlers import core
 
-        monkeypatch.setattr(core, "_active_advertised_ids", lambda req: None)
+        monkeypatch.setattr(core, "_active_advertised_ids", lambda req, backend=None: None)
         monkeypatch.setattr(
             "kiro_crew.dashboard.chat_handlers._model_rejected_reason",
             lambda m, provider=None: "display-only key" if m == "fable-5-1m" else None,
@@ -246,7 +246,7 @@ class TestValidateRoleModel:
             "kiro_crew.dashboard.chat_handlers._model_rejected_reason",
             lambda m, provider=None: None,
         )
-        monkeypatch.setattr(core, "_active_advertised_ids", lambda req: None)
+        monkeypatch.setattr(core, "_active_advertised_ids", lambda req, backend=None: None)
         # No advertised set -> don't accuse on no evidence.
         assert core._validate_role_model("opus-4.8-1m", self._req()) is None
 
@@ -257,7 +257,9 @@ class TestValidateRoleModel:
             "kiro_crew.dashboard.chat_handlers._model_rejected_reason",
             lambda m, provider=None: None,
         )
-        monkeypatch.setattr(core, "_active_advertised_ids", lambda req: ["sonnet-4.6-1m"])
+        monkeypatch.setattr(
+            core, "_active_advertised_ids", lambda req, backend=None: ["sonnet-4.6-1m"]
+        )
         reason = core._validate_role_model("opus-4.8-1m", self._req())
         assert reason is not None and "not available" in reason
 
@@ -268,7 +270,9 @@ class TestValidateRoleModel:
             "kiro_crew.dashboard.chat_handlers._model_rejected_reason",
             lambda m, provider=None: None,
         )
-        monkeypatch.setattr(core, "_active_advertised_ids", lambda req: ["sonnet-4.6-1m"])
+        monkeypatch.setattr(
+            core, "_active_advertised_ids", lambda req, backend=None: ["sonnet-4.6-1m"]
+        )
         assert core._validate_role_model("sonnet-4.6-1m", self._req()) is None
 
 

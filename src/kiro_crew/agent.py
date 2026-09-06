@@ -286,12 +286,11 @@ _BACKGROUND_CC_MODEL = "claude-sonnet-4.6"
 def _background_agent_model() -> str:
     """Kiro-spec model for background worker agents (lite / heartbeat).
 
-    Resolves ``agent.role_models['background']`` -> ``agent.model`` -> ``"auto"``
-    (see :meth:`AgentConfig.resolve_model`). Defaults to ``"auto"`` — which the
-    provider resolves server-side against the account's entitlement — so a
-    background agent stays usable on every subscription tier unless an operator
-    deliberately pins a (cheaper) model. Never raises: a config hiccup falls
-    back to ``"auto"``.
+    Resolves ``agent.role_models['background']`` -> ``"auto"`` (see
+    :meth:`AgentConfig.resolve_model`). The provider resolves ``"auto"``
+    server-side against the account's entitlement, so a background agent stays
+    usable on every subscription tier unless an operator deliberately pins a
+    (cheaper) model. Never raises: a config hiccup falls back to ``"auto"``.
     """
     try:
         from kiro_crew.config.loader import KiroCrewConfig
@@ -2440,6 +2439,21 @@ def _refresh_dynamic_fields(config: dict, *, gated_off: "frozenset[str] | None" 
     mc_model = normalize_agent_model((mc_cfg.get("agent") or {}).get("model"))
     if mc_model:
         config["model"] = mc_model
+        agent_state.set_synced_global_model(name, mc_model)
+    else:
+        # The global reverted to "auto" (or was never set). Clear the spec's
+        # model back to the sentinel ONLY when it still holds exactly what
+        # THIS sync last wrote — otherwise ownership has passed to something
+        # else (a per-agent pin from the Agent Templates editor, a hand edit)
+        # and this sync must not clobber a value it did not write. Without the
+        # equality check, an explicit global pin synced in and later reverted
+        # would stay frozen in the spec forever, since nothing else ever
+        # un-syncs it and a spec pin outranks the global in
+        # resolve_effective_model.
+        last_synced = agent_state.get_synced_global_model(name)
+        if last_synced is not None and config.get("model") == last_synced:
+            config["model"] = DEFAULT_MODEL
+        agent_state.set_synced_global_model(name, None)
 
     # Ensure kiro-cli uses agent-level mcpServers exclusively (not global
     # mcp.json).  Existing configs created before this field was added lack

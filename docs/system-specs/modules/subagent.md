@@ -267,6 +267,26 @@ The slow-command record (`record_slow_command`, `subagent_persistence.py`) is ap
 `subagent_tool` is fired on **`EVENT_TOOL_CALL`** (not only `EVENT_PERMISSION_REQUEST`) — kiro-auto-allowed tools surface only as informational `tool_call` updates, so this is the sole progress signal a simple/read-only task emits. Payload carries `{tool, tool_kind, turns, tool_count}`; `info.tool_count` increments per observed tool call. The `subagent_snapshot` reconnect payload (`dashboard/ws.py`, built by `build_subagent_snapshot()`) also carries `tool_count`, `stalled`, and — only while stalled — `idle_secs`, recomputed at replay time from `last_activity` (clamped at 0, omitted entirely for a healthy agent) so a reloading client recovers progress/stall state including the span that justifies the stall badge (a transition-only WS signal always needs a matching snapshot field).
 
 
+### Harness pin (`agent.role_backends['subagent']`)
+
+A sub-agent may run on a different ACP harness than chat — the configuration
+this exists for is an expensive harness for interactive work and a cheaper one
+for spawned runs. An absent `role_backends['subagent']` key inherits chat;
+`""` is an explicit Kiro CLI pin. `subagent._subagent_default_backend()`
+answers `None` unless the effective pin actually DIFFERS from
+`agent.acp_backend` (or from the parent slot's per-session harness), so an
+unset or same-as-chat role leaves `subagent_manager/run.py`'s kwargs
+byte-identical to a build without the pin; a differing value rides as
+`acp_backend_override`.
+
+A differing pin also forces the dedicated-process path by clearing
+`use_session_sharing`, alongside the existing per-spawn model and effort
+overrides. The reason is one step stronger than theirs: the parent's shared
+runtime is a different **binary**, not merely a different model on the same one,
+so sharing it would run the sub-agent on precisely the harness the operator
+moved it off. Resolution rules and the background half:
+[providers.md](providers.md).
+
 ### Model Provenance (#3582)
 
 Every subagent card names the model the run actually ran on, so a model-pinned

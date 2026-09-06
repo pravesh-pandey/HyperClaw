@@ -24,6 +24,11 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 
 from kiro_crew.acp.client import AcpModelUnavailable
+from kiro_crew.acp_backends import (
+    ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_CODEX,
+    ACP_BACKEND_KIRO,
+)
 from kiro_crew.dashboard import chat_handlers as ch
 from kiro_crew.dashboard.chat_persistence import get_reasoning_effort_values
 from kiro_crew.dashboard.state import _MAX_PENDING_CONTEXT, DashboardState, _ChatSlot
@@ -74,7 +79,15 @@ def _acp(**attrs):
     provider.change_effort = AsyncMock(return_value=True)
     provider.clear_effort = AsyncMock(return_value=True)
     provider.client = MagicMock()
+    # A concrete backend STRING. Harness capability is membership in a named set
+    # read off ``client.backend`` (harness-parity H5/H6), so a double carrying
+    # only ``is_claude_backend`` silently exercises the kiro branch.
+    provider.client.backend = ACP_BACKEND_KIRO
     provider.client.set_model = AsyncMock(return_value=None)
+    backend = attrs.pop("backend", None)
+    if backend is not None:
+        provider.client.backend = backend
+        provider.is_claude_backend = backend == ACP_BACKEND_CLAUDE
     for key, value in attrs.items():
         setattr(provider, key, value)
     return provider
@@ -240,13 +253,23 @@ class TestHasConversation:
 
 class TestWireModelId:
     def test_claude_backend_cannot_express_default(self):
-        assert ch._wire_model_id(_acp(is_claude_backend=True), "sonnet-4.5") == "sonnet-4.5"
-        assert ch._wire_model_id(_acp(is_claude_backend=True), "") == ""
-        assert ch._wire_model_id(_acp(is_claude_backend=True), "auto") == ""
+        # No config value means "let the server choose" -- claude-agent-acp
+        # refuses a literal "auto" -- so Auto still falls back to a reset.
+        assert ch._wire_model_id(_acp(backend=ACP_BACKEND_CLAUDE), "sonnet-4.5") == "sonnet-4.5"
+        assert ch._wire_model_id(_acp(backend=ACP_BACKEND_CLAUDE), "") == ""
+        assert ch._wire_model_id(_acp(backend=ACP_BACKEND_CLAUDE), "auto") == ""
 
-    def test_claude_backend_translates_canonical_key(self):
-        wire = ch._wire_model_id(_acp(is_claude_backend=True), "opus-4.8-1m")
-        assert wire == "global.anthropic.claude-opus-4-8[1m]"
+    def test_external_adapters_send_their_own_ids_verbatim(self):
+        # Every own-catalog harness accepts exactly what it advertised. A
+        # registry translation lands outside that set: to_provider_id would turn
+        # the advertised "opus" into "global.anthropic.claude-opus-4-8[1m]",
+        # which claude-agent-acp refuses with -32603.
+        for backend, model in (
+            (ACP_BACKEND_CLAUDE, "opus"),
+            (ACP_BACKEND_CLAUDE, "claude-fable-5-1[1m]"),
+            (ACP_BACKEND_CODEX, "gpt-5.6-sol"),
+        ):
+            assert ch._wire_model_id(_acp(backend=backend), model) == model
 
     def test_kiro_default_needs_auto_to_be_advertised(self):
         without = _acp(available_models=MagicMock(return_value=[{"modelId": "claude-opus-4.8"}]))

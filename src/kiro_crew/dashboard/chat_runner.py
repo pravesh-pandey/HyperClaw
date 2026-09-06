@@ -31,6 +31,9 @@ from kiro_crew.acp.types import (
     EVENT_MCP_SERVER_INIT_FAILURE,
     EVENT_MCP_SERVER_INITIALIZED,
     EVENT_STEER_CONSUMED,
+    PROVIDER_LABEL_CLAUDE,
+    PROVIDER_LABEL_CODEX,
+    PROVIDER_LABEL_DEFAULT,
     STOP_REASON_CANCELLED,
     STOP_REASON_COMPACTION_FAILED,
     STOP_REASON_END_TURN,
@@ -38,6 +41,7 @@ from kiro_crew.acp.types import (
     STOP_REASON_STALE_RECOVER,
     STOP_REASON_TOOL_STALL,
 )
+from kiro_crew.acp_backends import ACP_BACKENDS_PROMPT_COMMANDS
 from kiro_crew.agent_discovery import warm_project_agent_names
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
 from kiro_crew.autonudge import get_instance
@@ -832,6 +836,15 @@ def _backfill_canonical_model(client: Any, provider: str) -> str:
     if not is_claude_code(provider) and _is_bedrock_profile_id(prov_model):
         return ""
     return model_registry.canonicalize_for_provider(prov_model, provider)
+
+
+def _served_provider_label(client: Any) -> str:
+    """Return the live ACP harness label used for model/context attribution."""
+    if is_claude_backend(client):
+        return PROVIDER_LABEL_CLAUDE
+    if getattr(client, "is_codex_backend", False) is True:
+        return PROVIDER_LABEL_CODEX
+    return PROVIDER_LABEL_DEFAULT
 
 
 def _pinned_model_withheld(client: Any, model: str, provider: str) -> bool:
@@ -3409,6 +3422,7 @@ async def _eager_spawn(
                     speculative=True,
                     speculative_resume=allow_resume,
                     reasoning_effort_override=slot.reasoning_effort or None,
+                    acp_backend_override=slot.acp_backend,
                 )
             except SpeculativeResumeRefused:
                 # Two sources: the entry gate (resumable key, resume not
@@ -5073,7 +5087,10 @@ async def _run_chat(
 
     # ── Slash commands: detect early, before session acquisition ──
     first_word = message.split()[0] if message.strip() else ""
-    _is_cc_provider = is_claude_code(KiroCrewConfig.load().agent.provider)
+    _slash_cfg = KiroCrewConfig.load()
+    _is_cc_provider = is_claude_code(_slash_cfg.agent.provider) or (
+        _slash_cfg.agent.acp_backend in ACP_BACKENDS_PROMPT_COMMANDS
+    )
     # Named rather than inlined so the quick-prompt exception is one testable rule
     # instead of a condition only reachable by driving this whole function: a macro
     # must NOT be forwarded to the harness as a command.
@@ -5315,7 +5332,6 @@ async def _run_chat(
         _app_agent_unresolved = False
         try:
             cfg = KiroCrewConfig.load()
-            provider_name = cfg.agent.provider
             # Warm the project agent index OFF the loop, then resolve inline. Only
             # the warm is offloaded: resolve_agent_bindings can raise StopIteration
             # on a malformed config, and StopIteration cannot be delivered through a
@@ -5411,8 +5427,13 @@ async def _run_chat(
             model=slot.model or agent_model or None,
             cwd=slot.project or None,
             reasoning_effort_override=slot.reasoning_effort or None,
+            acp_backend_override=slot.acp_backend,
         )
         _acquired = True
+        # The public provider seam is always ``acp``; model translation and
+        # context assembly need the harness that the live provider actually
+        # selected (Claude Code, Codex, or Kiro).
+        provider_name = _served_provider_label(client)
         # Member activity pointer — once per SESSION, not per turn: the log
         # answers "which sessions did this member take part in", so a per-turn
         # append would inflate every count taken from it. `slot.agent` is the
@@ -5878,7 +5899,7 @@ async def _run_chat(
                 compressed_history=compressed,
                 mode=slot.mode,
                 blocks_reads=slot.blocks_reads,
-                provider_type=cfg.agent.provider,
+                provider_type=provider_name,
                 runtime_source="dashboard",
                 exclude_last_n=1,
                 folder_path=folder_path,
@@ -8124,6 +8145,8 @@ async def _run_chat(
                 # prefers the SERVED id instead (see the emit below): billing and
                 # attribution are different questions.
                 _provider_name = "claude_code" if is_claude_backend(client) else "acp"
+                if getattr(client, "is_codex_backend", False) is True:
+                    _provider_name = PROVIDER_LABEL_CODEX
                 _record_model = "" if slot._active_fallback_model else slot.model
                 # One shared predicate across every persist gate (#6758): a
                 # claude-seam turn ending via a synthetic EVENT_COMPLETE
@@ -8460,7 +8483,7 @@ async def _run_chat(
             # summary (e.g. via EVENT_COMPLETE payload growing a `summary`
             # field), pipe it through redact_credentials + redact_exfiltration_urls
             # before interpolation — matching the kiro-cli path below.
-            if is_claude_backend(client):
+            if is_claude_backend(client) or getattr(client, "is_codex_backend", False) is True:
                 msg = "✅ Conversation compacted."
                 _append_compaction_notice(state, slot, msg)
                 state.broadcast_context_usage(slot.key, _context_usage_payload(slot.key, client))

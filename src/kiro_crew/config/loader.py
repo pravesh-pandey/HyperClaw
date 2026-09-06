@@ -3,8 +3,8 @@
 Config location: ~/.kiro/crew/config.json (overridden by KIROCREW_HOME)
 Credentials:    ~/.kiro/crew/.env (overridden by KIROCREW_HOME)
 
-KiroCrew is KiroACP-only: the sole provider is the ACP adapter driving the
-kiro-cli backend. This module handles session timeouts, hook rules, and the
+Kiro Crew keeps one ACP provider seam and selects its harness through
+``agent.acp_backend``. This module handles session timeouts, hook rules, and the
 dashboard URL via the config file. (The dashboard *port* is set with the
 ``KIROCREW_PORT`` env var, not a config key.)
 """
@@ -38,7 +38,11 @@ from kiro_crew import __version__, model_registry, platform_compat, windows_acl
 # The one gate stays where the pre-registry code already gated — inside
 # ``_normalize_acp_backend`` on the way out of config.json. Only what it reads
 # changed: the registry, instead of a frozen literal.
-from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE, resolve_selected_backend
+from kiro_crew.acp_backends import (
+    ACP_BACKENDS_OWN_MODEL_CATALOG,
+    resolve_selected_backend,
+    selectable_backends,
+)
 
 # Leaf module (stdlib + platform_compat only) — no import cycle with config.
 from kiro_crew.atomic_write import atomic_write, on_event_loop
@@ -334,11 +338,11 @@ def normalize_agent_model(model: object) -> str:
 
 # Per-task-class model overrides (agent.role_models). These are the ONLY
 # sanctioned place to pin a model for a class of work — never hardcode a model
-# id in code. Every role defaults to "" ("inherit"), which resolves down to
-# agent.model and finally to DEFAULT_MODEL ("auto"), so an unpinned role is
-# entitlement-safe on every subscription tier (the provider picks a served
-# model). An operator who deliberately wants a cheaper model for background /
-# sub-agent work pins it here without changing the interactive chat default.
+# id in code. Every role defaults to "" ("no pin"), which resolves directly to
+# DEFAULT_MODEL ("auto"), so an unpinned role is entitlement-safe on every
+# subscription tier without inheriting the interactive chat model. An operator
+# who deliberately wants a cheaper model for background / sub-agent work pins it
+# here without changing the interactive chat default.
 ROLE_MODEL_KEYS: tuple[str, ...] = ("background", "subagent")
 
 
@@ -347,9 +351,9 @@ def coerce_role_models(raw: object) -> dict[str, str]:
 
     Only the known :data:`ROLE_MODEL_KEYS` are kept; each value passes through
     :func:`normalize_agent_model`, so an ``"auto"`` or non-string entry collapses
-    to ``""`` ("inherit the next tier down"). Empty results are dropped so the
-    stored map only ever carries real pins — a role absent from the map and a
-    role explicitly set to ``"auto"`` behave identically (both inherit).
+    to ``""`` ("no pin"). Empty results are dropped so the stored map only ever
+    carries real pins — a role absent from the map and a role explicitly set to
+    ``"auto"`` behave identically (both defer to the role's provider default).
     """
     if not isinstance(raw, dict):
         return {}
@@ -361,13 +365,51 @@ def coerce_role_models(raw: object) -> dict[str, str]:
     return out
 
 
+#: Per-task-class harness overrides (agent.role_backends), same keys as
+#: :data:`ROLE_MODEL_KEYS`. A role absent here runs on ``agent.acp_backend`` —
+#: the chat harness — because unlike a model there is no "auto" a harness can
+#: resolve for itself, and silently running unattended work on a harness the
+#: operator never selected is the surprise this inherits away from.
+ROLE_BACKEND_KEYS: tuple[str, ...] = ROLE_MODEL_KEYS
+
+
+def coerce_role_backends(raw: object) -> dict[str, str]:
+    """Normalize the per-role harness map from config / request bodies.
+
+    Only :data:`ROLE_BACKEND_KEYS` survive, and each value is re-gated through
+    the same registry config load uses, so a role naming a harness this build
+    cannot serve is dropped rather than reaching a spawn. The empty string is
+    retained when it is explicitly present: it is kiro-cli's real wire id, so
+    dropping it would make it impossible to pin a role to Kiro when chat uses a
+    different harness. An absent role key is the distinct inherit sentinel.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, str] = {}
+    for role in ROLE_BACKEND_KEYS:
+        val = raw.get(role)
+        if not isinstance(val, str):
+            continue
+        normalized = val.strip()
+        if normalized == "":
+            out[role] = resolve_selected_backend(normalized)
+        elif normalized in selectable_backends():
+            out[role] = resolve_selected_backend(normalized)
+        else:
+            # Call the shared gate for its diagnostic, but do not store its
+            # Kiro fallback: an invalid role pin must not become an explicit
+            # Kiro pin merely because the gate's safe default is empty.
+            resolve_selected_backend(normalized)
+    return out
+
+
 def coerce_role_efforts(raw: object) -> dict[str, str]:
     """Normalize the per-role reasoning-effort map (agent.role_efforts).
 
     Same role keys as :data:`ROLE_MODEL_KEYS`. Each value must be a concrete,
     valid effort level; ``""`` / an invalid / non-string entry is dropped so the
     stored map carries only real pins — an absent role and an empty one both
-    mean "inherit the chat default effort, then the provider/model default".
+    defer to the provider/model default without inheriting the chat override.
     """
     if not isinstance(raw, dict):
         return {}
@@ -1639,8 +1681,8 @@ class AgentConfig:
             "Per-role models",
             "Optional per-task-class model overrides. Keys: 'background' "
             "(lite / heartbeat background workers) and 'subagent' (spawned "
-            "sub-agents). An empty value or 'auto' defers to the chat default "
-            "(agent.model) and then to the provider default, so an unpinned "
+            "sub-agents). An empty value or 'auto' defers to the provider "
+            "default, so an unpinned "
             "role stays usable on every subscription tier. Pin a cheaper model "
             "here to run background / sub-agent work on it without changing the "
             "interactive chat default.",
@@ -1651,9 +1693,20 @@ class AgentConfig:
         metadata=_meta(
             "Per-role reasoning effort",
             "Optional per-task-class reasoning effort, paired with role_models "
-            "(keys: 'background', 'subagent'). Empty for a role inherits the chat "
-            "default (agent.reasoning_effort) and then the provider/model default. "
+            "(keys: 'background', 'subagent'). Empty for a role defers to the "
+            "provider/model default and does not inherit the chat override. "
             "Only applies on reasoning-capable models.",
+        ),
+    )
+    role_backends: dict[str, str] = field(
+        default_factory=dict,
+        metadata=_meta(
+            "Per-role ACP harness",
+            "Optional per-task-class harness overrides (keys: 'background', "
+            "'subagent'). An unset role runs on the chat harness "
+            "(agent.acp_backend). Point background and sub-agent work at a "
+            "cheaper harness here without moving interactive chat off the one "
+            "you use directly.",
         ),
     )
     fallback_model: str = field(
@@ -1682,7 +1735,11 @@ class AgentConfig:
     )
     provider: str = field(
         default="acp",
-        metadata=_meta("Provider", "LLM provider backend (KiroACP / kiro-cli).", enum=["acp"]),
+        metadata=_meta(
+            "Provider",
+            "LLM provider seam (ACP; harness selected separately by acp_backend).",
+            enum=["acp"],
+        ),
     )
     mcp_registry_mode: bool = field(
         default=False,
@@ -1718,8 +1775,9 @@ class AgentConfig:
         default="",
         metadata=_meta(
             "ACP Backend",
-            "Which ACP agent to drive: '' = kiro-cli (default), 'kas' = kiro-agent. "
-            "KAS runs chat but has no native subagent progress reporting yet.",
+            "Which ACP harness to drive: '' = kiro-cli (default), 'claude' = Claude "
+            "Code, 'codex' = Codex, or 'kas' = kiro-agent. KAS runs chat but has "
+            "no native subagent progress reporting yet.",
             # Deliberately NO ``enum``. A literal here was frozen at import and fed
             # two import-time structures (``JSON_SCHEMA`` and ``SCHEMA_REGISTRY``),
             # both strictly earlier than an edition registering a backend at boot.
@@ -2212,6 +2270,7 @@ class AgentConfig:
         # Defensive for directly-constructed instances; the load() path already
         # feeds coerced input.
         self.role_models = coerce_role_models(self.role_models)
+        self.role_backends = coerce_role_backends(self.role_backends)
         self.role_efforts = coerce_role_efforts(self.role_efforts)
         # Same defensive coercion for the throttle-fallback model: normalize to
         # ""/"auto"/acp id, so consumers can trust the stored shape.
@@ -2228,6 +2287,19 @@ class AgentConfig:
         that write a kiro agent spec / cc_model store this verbatim.
         """
         return normalize_agent_model(self.role_models.get(role, "")) or DEFAULT_MODEL
+
+    def resolve_backend(self, role: str) -> str:
+        """Effective ACP harness for a task ``role``.
+
+        Unlike :meth:`resolve_model` this DOES inherit the chat value
+        (``agent.acp_backend``) when the role pins nothing. A model has an
+        ``auto`` sentinel the provider can resolve; a harness does not, so the
+        only sane "unset" is "the same one chat runs on". Pinning a role here is
+        what lets unattended work run on a cheaper harness than interactive chat.
+        """
+        if role in self.role_backends:
+            return self.role_backends[role]
+        return self.acp_backend
 
     def resolve_effort(self, role: str) -> str:
         """Effective reasoning effort for a task ``role`` — INDEPENDENT of the chat
@@ -8261,6 +8333,7 @@ class KiroCrewConfig:
                 streaming=agent_data.get("streaming", True),
                 model=agent_data.get("model", DEFAULT_MODEL),
                 role_models=coerce_role_models(agent_data.get("role_models")),
+                role_backends=coerce_role_backends(agent_data.get("role_backends")),
                 role_efforts=coerce_role_efforts(agent_data.get("role_efforts")),
                 fallback_model=coerce_fallback_model(agent_data.get("fallback_model", "auto")),
                 reasoning_effort=agent_data.get("reasoning_effort", ""),
@@ -9480,6 +9553,7 @@ class KiroCrewConfig:
         agent: str | None,
         model_override: str | None,
         global_model: str | None = None,
+        backend: str | None = None,
     ) -> str:
         """The model id the ACP factory selects — what its effort gate keys on.
 
@@ -9497,31 +9571,44 @@ class KiroCrewConfig:
         :meth:`_resolve_agent_model` when it is the ``auto`` sentinel).
 
         The result is translated into the namespace of the backend that will
-        actually be asked to run it: ``to_provider_id(…, "claude_code")`` for
-        the claude backend, ``model_registry.to_acp_id`` otherwise (canonical
-        keys become kiro ids). ``auto`` collapses to ``""`` either way.
+        actually be asked to run it: the raw adapter id for every member of
+        ``ACP_BACKENDS_OWN_MODEL_CATALOG``, and ``to_acp_id`` for Kiro/KAS.
+        ``auto`` collapses to ``""`` either way.
 
         Keying the translation on the backend is what the warm-pool model-switch
-        path already does (``session_allocation``, via ``is_claude_backend``).
-        Hardcoding ``to_acp_id`` here meant a COLD start handed the claude
-        adapter a kiro-namespaced id — which its ``set_config_option`` rejects,
-        and which nothing withheld, because the pre-wire availability guard is
-        deliberately kiro-only (the two backends advertise in different
-        namespaces, so that check cannot be widened — see
-        ``acp.client.model_is_unusable``). A warm claim of the same pinned model
-        translated correctly, so the failure depended on whether a pooled
-        process happened to exist. Not reachable from the default config:
-        ``auto`` pins nothing, and the client skips the send entirely.
+        path already does (``session_allocation``). Hardcoding ``to_acp_id`` here
+        meant a COLD start handed an external adapter a kiro-namespaced id, which
+        its ``set_config_option`` rejects. Sending the id RAW is what the adapters
+        want: each advertises its accepted values through its ``model`` config
+        option, and a registry translation lands outside that set —
+        ``to_provider_id("opus", "claude_code")`` yields
+        ``global.anthropic.claude-opus-4-8[1m]``, which ``claude-agent-acp``
+        refuses with a ``-32603``.
 
-        ``to_acp_id``, NOT ``to_provider_id``, is the non-claude choice because
-        kiro serves the registry aliases as distinct real models — see its
-        docstring. ``""`` means nothing is pinned anywhere: the backend resolves
-        the model itself and the effort overlay cannot be keyed.
+        Membership in ``ACP_BACKENDS_OWN_MODEL_CATALOG`` also decides where the
+        collapsed global comes from, and that is the half with teeth: these
+        harnesses must NOT fall back to ``_resolve_agent_model``, which reads
+        ``~/.kiro/agents/kirocrew.json``. That file is kiro-cli's, so an operator
+        running kiro-cli on a GPT model had ``gpt-5.6-sol`` handed to
+        ``claude-agent-acp`` on every cold start.
+
+        ``to_acp_id``, NOT ``to_provider_id``, is the Kiro choice because kiro
+        serves the registry aliases as distinct real models — see its docstring.
+        ``""`` means nothing is pinned anywhere: the backend resolves the model
+        itself and the effort overlay cannot be keyed.
         """
+        # ``backend`` names the harness this selection is FOR. It defaults to
+        # the configured one; a per-session pick passes its own so the id lands
+        # in the namespace that session will actually run in.
+        backend = self.agent.acp_backend if backend is None else backend
         if global_model is None:
             global_model = self.agent.model
             if global_model == DEFAULT_MODEL:
-                global_model = self._resolve_agent_model()
+                if backend in ACP_BACKENDS_OWN_MODEL_CATALOG:
+                    # The harness resolves Auto from its own advertised config.
+                    global_model = DEFAULT_MODEL
+                else:
+                    global_model = self._resolve_agent_model()
         if model_override:
             m: str = model_override
         elif not agent or agent == "kirocrew":
@@ -9530,8 +9617,8 @@ class KiroCrewConfig:
             m = self._resolve_named_agent_model(agent) or global_model
         if not m:
             return ""
-        if self.agent.acp_backend == ACP_BACKEND_CLAUDE:
-            return model_registry.to_provider_id(m, "claude_code")
+        if backend in ACP_BACKENDS_OWN_MODEL_CATALOG:
+            return "" if m == DEFAULT_MODEL else m
         return model_registry.to_acp_id(m)
 
     @staticmethod
@@ -9642,17 +9729,31 @@ class KiroCrewConfig:
     def create_provider_factory(self) -> Callable:
         """Return a factory that creates LLMProvider instances from config.
 
-        KiroCrew is KiroACP-only: the sole provider is the ACP adapter driving
-        the kiro-cli backend. The factory accepts an optional ``session_key`` to
-        create a per-session subdirectory under ``workspace_root()``.
+        The single ACP provider adapts the selected Kiro, Claude Code, Codex, or
+        KAS harness. The factory accepts an optional ``session_key`` to create a
+        per-session subdirectory under ``workspace_root()``.
         """
         from kiro_crew.providers.acp import (
             AcpProvider,  # circular: acp -> client -> session -> config.loader
         )
 
-        model = self.agent.model
-        if model == DEFAULT_MODEL:
-            model = self._resolve_agent_model()
+        configured_model = self.agent.model
+
+        def _resolve_auto_model(backend: str) -> str:
+            """Expand the ``auto`` sentinel for *backend*, or leave it alone.
+
+            Kiro agent JSON stores Kiro/ACP model ids, and backends in
+            ``ACP_BACKENDS_OWN_MODEL_CATALOG`` do not read that file — resolving
+            the sentinel through the installed Kiro spec would pin an unrelated
+            id into their adapter. Keyed on the EFFECTIVE backend rather than the
+            configured one so a session that overrides the harness resolves in
+            the namespace it will actually run in.
+            """
+            if configured_model != DEFAULT_MODEL:
+                return configured_model
+            if backend in ACP_BACKENDS_OWN_MODEL_CATALOG:
+                return DEFAULT_MODEL
+            return self._resolve_agent_model()
 
         sandbox = self.agent.sandbox
         tool_search = self.agent.tool_search
@@ -9695,9 +9796,21 @@ class KiroCrewConfig:
             extra_env: dict[str, str] | None = None,
             reasoning_effort_override: str | None = None,
             crew_agent: str | None = None,
+            acp_backend_override: str | None = None,
             **_kwargs: object,
         ) -> AcpProvider:
             wdir = Path(cwd) if cwd else _session_work_dir(session_key)
+            # Which HARNESS this session runs on. ``None`` means "no per-session
+            # pick" and inherits the configured default; a pick is re-gated
+            # through the same registry config load uses, so a stale slot value
+            # for a backend this build no longer serves degrades to Kiro with a
+            # logged reason instead of reaching the spawn path.
+            eff_backend = (
+                resolve_selected_backend(acp_backend_override)
+                if acp_backend_override is not None
+                else self.agent.acp_backend
+            )
+            model = _resolve_auto_model(eff_backend)
             # Canonical crew identity for the session (keys per-agent watchdog
             # windows on the handle) — one shared resolution rule, see
             # resolve_crew_identity.
@@ -9725,7 +9838,9 @@ class KiroCrewConfig:
             # gate actually keys on. (Why the translation is keyed on the
             # backend, and why to_acp_id is the non-claude choice, is documented
             # on that method.)
-            m = self.acp_effective_model(agent, model_override, global_model=model)
+            m = self.acp_effective_model(
+                agent, model_override, global_model=model, backend=eff_backend
+            )
             # Thread the slot's effort into a per-model override so the kiro
             # cli.json overlay is written from it at spawn — without this, a
             # kiro cold start (or the handler's reset-then-respawn) would only
@@ -9741,8 +9856,31 @@ class KiroCrewConfig:
             else:
                 base_effort = default_effort
             _eff = reasoning_effort_override or base_effort
-            if m and _eff and is_valid_effort(_eff) and model_supports_effort(m):
+            deferred_effort: str | None = None
+            if (
+                m
+                and _eff
+                and is_valid_effort(_eff)
+                and (
+                    model_supports_effort(m)
+                    # Codex validates effort against its live config option;
+                    # its model catalog can contain families unknown to this
+                    # process's static registry.
+                    or eff_backend in ACP_BACKENDS_OWN_MODEL_CATALOG
+                )
+            ):
                 _eff_per_model[m] = _eff
+            elif (
+                not m
+                and eff_backend in ACP_BACKENDS_OWN_MODEL_CATALOG
+                and _eff
+                and is_valid_effort(_eff)
+            ):
+                # Codex resolves ``auto`` through its own model selector after
+                # the ACP handshake. Preserve a configured effort until that
+                # selector reports the concrete model instead of warning that
+                # the level was dropped during cold-start construction.
+                deferred_effort = _eff
             elif _eff and is_valid_effort(_eff):
                 # Single-authority drop warning: a valid requested effort is
                 # being dropped because the resolved model is empty or not
@@ -9784,8 +9922,9 @@ class KiroCrewConfig:
                 session_key=session_key,
                 channel_id=channel_id,
                 extra_env=extra_env,
-                acp_backend=self.agent.acp_backend,
+                acp_backend=eff_backend,
                 effort_per_model=_eff_per_model,
+                default_effort=deferred_effort,
                 tool_search=tool_search,
                 tool_search_min_pct=tool_search_min_pct,
                 tool_search_min_tokens=tool_search_min_tokens,
@@ -10592,6 +10731,12 @@ def resolve_effective_model(
     configured = normalize_agent_model(config.agent.model)
     if configured:
         return configured
+    # The installed Kiro agent spec is the final fallback only for harnesses
+    # that consume it. Harnesses in the own-catalog capability set do not read
+    # that file; exposing its Kiro-specific pin would make the dashboard claim
+    # a model the selected adapter never chose.
+    if config.agent.acp_backend in ACP_BACKENDS_OWN_MODEL_CATALOG:
+        return ""
     # agent.model is "auto"/unset: fall through to the installed agent file the
     # factory would read, so the chip shows what will actually be used.
     return normalize_agent_model(config._resolve_agent_model())

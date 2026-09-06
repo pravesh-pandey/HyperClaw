@@ -33,6 +33,7 @@ from typing import Any, Dict, List
 
 from aiohttp import web
 
+from kiro_crew.acp_backends import ACP_BACKEND_KIRO
 from kiro_crew.dashboard.handlers.kiro_prerequisite import _is_dashboard_owner
 from kiro_crew.sel import sel
 
@@ -122,10 +123,31 @@ def _snapshot() -> List[Dict[str, Any]]:
     return rows
 
 
+def _configured_backend() -> str:
+    """The harness a session runs on when it has made no pick of its own.
+
+    Off-loop with the snapshot, and resilient: an unreadable config answers Kiro,
+    which is the floor every deployment can serve.
+    """
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    try:
+        return KiroCrewConfig.load().agent.acp_backend
+    except Exception:
+        logger.warning("Could not read the configured acp_backend", exc_info=True)
+        return ACP_BACKEND_KIRO
+
+
 async def api_acp_backend_status(request: web.Request) -> web.Response:
-    """GET /api/acp-backends -- selectability + install state for every backend."""
+    """GET /api/acp-backends -- selectability + install state for every backend.
+
+    ``configured`` is what a chat session runs on before anyone picks for it.
+    The composer needs it because a slot that never touched the picker carries
+    no harness of its own, and rendering that as kiro-cli would misreport every
+    session on a deployment whose default is something else.
+    """
     denial = await _deny_non_owner(request)
     if denial is not None:
         return denial
-    backends = await asyncio.to_thread(_snapshot)
-    return web.json_response({"backends": backends})
+    backends, configured = await asyncio.to_thread(lambda: (_snapshot(), _configured_backend()))
+    return web.json_response({"backends": backends, "configured": configured})

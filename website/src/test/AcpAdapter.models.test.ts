@@ -71,7 +71,7 @@ describe('AcpAdapter.fetchAvailableModels', () => {
       { model_name: 'claude-opus-4.8', description: 'b' },
     ])
     await new AcpAdapter().fetchAvailableModels()
-    const raw = localStorage.getItem('kc.acp.models.v1')
+    const raw = localStorage.getItem('kc.acp.models.v2.default')
     expect(raw).toBeTruthy()
     const cached = JSON.parse(raw as string)
     expect(cached.models.map((m: any) => m.name)).toEqual(['auto', 'claude-opus-4.8'])
@@ -94,6 +94,23 @@ describe('AcpAdapter.fetchAvailableModels', () => {
     expect(models.map(m => m.name)).toContain('claude-fable-5')
   })
 
+  it('keeps cached model lists isolated by ACP backend', async () => {
+    ;(api.models as any).mockResolvedValueOnce([
+      { model_name: 'auto' },
+      { model_name: 'claude-chat-model' },
+    ]).mockResolvedValueOnce([
+      { model_name: 'auto' },
+      { model_name: 'opencode/provider-model' },
+    ])
+    const adapter = new AcpAdapter()
+    await adapter.fetchAvailableModels(undefined, '')
+    await adapter.fetchAvailableModels(undefined, 'opencode')
+    ;(api.models as any).mockRejectedValue(new Error('503'))
+    const models = await adapter.fetchAvailableModels(undefined, 'opencode')
+    expect(models.map(m => m.name)).toEqual(['auto', 'opencode/provider-model'])
+    expect(models.map(m => m.name)).not.toContain('claude-chat-model')
+  })
+
   it('falls back to auto-only when the API throws and there is no cache', async () => {
     ;(api.models as any).mockRejectedValue(new Error('503'))
     const models = await new AcpAdapter().fetchAvailableModels()
@@ -110,14 +127,14 @@ describe('AcpAdapter.fetchAvailableModels', () => {
     await adapter.fetchAvailableModels()
     ;(api.models as any).mockResolvedValue([]) // empty success must not clobber cache
     await adapter.fetchAvailableModels()
-    const cached = JSON.parse(localStorage.getItem('kc.acp.models.v1') as string)
+    const cached = JSON.parse(localStorage.getItem('kc.acp.models.v2.default') as string)
     expect(cached.models).toHaveLength(2)
   })
 
   it('ignores a cache older than the TTL (bounds -32603 exposure)', async () => {
     // Write a stale cache (25h old) directly.
     localStorage.setItem(
-      'kc.acp.models.v1',
+      'kc.acp.models.v2.default',
       JSON.stringify({
         ts: Date.now() - 25 * 60 * 60 * 1000,
         models: [{ name: 'auto' }, { name: 'stale-model' }],
@@ -132,7 +149,7 @@ describe('AcpAdapter.fetchAvailableModels', () => {
 
   it('ignores a cache with a future timestamp (clock skew)', async () => {
     localStorage.setItem(
-      'kc.acp.models.v1',
+      'kc.acp.models.v2.default',
       JSON.stringify({
         ts: Date.now() + 60 * 60 * 1000, // 1h in the future
         models: [{ name: 'auto' }, { name: 'skewed-model' }],

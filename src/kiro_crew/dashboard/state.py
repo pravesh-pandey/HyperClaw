@@ -2929,6 +2929,7 @@ class _ChatSlot:
         "agent",
         "model",
         "reasoning_effort",
+        "acp_backend",
         "autocompact_pct",
         "mode",
         "workspace",
@@ -3092,6 +3093,22 @@ class _ChatSlot:
         # Reasoning effort: "" = provider default, else one of low/medium/high/max.
         # Currently consumed by an alternate ACP backend (--effort flag); ACP wired later.
         self.reasoning_effort: str = ""
+        # Which ACP harness this session runs on. ``None`` = no per-session pick,
+        # so it INHERITS the configured default; "" is the opposite — an explicit
+        # choice of kiro-cli, whose wire id is the empty string. Keeping the two
+        # apart is what makes the sticky default work: a slot created before the
+        # operator switched to Codex must follow that switch, while a slot whose
+        # user deliberately picked Kiro must not.
+        #
+        # Resolved to a concrete id at the two consumption points that can read
+        # config (the provider factory and /api/models); the wire projection
+        # emits it raw, because that path is documented as never touching config.
+        #
+        # Unlike model and effort this cannot be switched on a live session — a
+        # different harness is a different subprocess with an incompatible session
+        # id — so the setter resets the slot and lets the existing provider-switch
+        # path replay history into the new one.
+        self.acp_backend: str | None = None
         # Per-session auto-compact threshold override (percent). None = follow
         # the global session.autocompact_pct. Persisted with the slot and
         # re-seeded into the SessionManager after restore.

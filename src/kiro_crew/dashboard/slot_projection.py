@@ -196,6 +196,7 @@ class SlotProjection:
             "effective_agent": resolve_effective_agent(slot.agent, slot.project or None),
             "model": slot.model,
             "reasoning_effort": slot.reasoning_effort,
+            "acp_backend": slot.acp_backend,
             "mode": slot.mode,
             "surface": slot.mode,
             "workspace": slot.workspace,

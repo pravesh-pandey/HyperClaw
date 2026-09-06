@@ -55,6 +55,8 @@ const {
   kirocrewConfigMock,
   patchConfigMock,
   modelsMock,
+  acpBackendsMock,
+  effortLevelsMock,
   tipsStatusMock,
   tipsFeedbackMock,
 } = vi.hoisted(() => ({
@@ -69,6 +71,17 @@ const {
       { model_name: 'claude-haiku-4.5', description: 'Haiku' },
     ])
   ),
+  acpBackendsMock: vi.fn(() => Promise.resolve({
+    configured: '',
+    backends: [
+      { id: '', selectable: true },
+      { id: 'claude', selectable: true },
+      { id: 'codex', selectable: true },
+    ],
+  })),
+  // The harness's own effort ladder. Mocked because the panel now ASKS which
+  // levels the selected provider takes rather than rendering a static list.
+  effortLevelsMock: vi.fn(() => Promise.resolve(['low', 'medium', 'high', 'xhigh', 'max'])),
   tipsStatusMock: vi.fn(() => Promise.resolve({ enabled_config: true, opted_out: false })),
   tipsFeedbackMock: vi.fn(() => Promise.resolve({ ok: true })),
 }))
@@ -80,6 +93,8 @@ vi.mock('../api/client', () => ({
     kirocrewConfig: kirocrewConfigMock,
     patchConfig: patchConfigMock,
     models: modelsMock,
+    acpBackends: acpBackendsMock,
+    effortLevels: effortLevelsMock,
     voiceConfig: () => Promise.resolve({ enabled: false, voice: 'Ruth', engine: 'neural', rate: '100%', autoSpeak: false, aws_profile: '', region: '' }),
     sttConfig: () => Promise.resolve({ enabled: false, provider: '', model: '', available: false, streaming: false, transcribe_region: '', transcribe_profile: '', language_code: 'en-US', models: {}, language_codes: [] }),
     updateVoiceConfig: () => Promise.resolve({}),
@@ -161,11 +176,29 @@ beforeEach(() => {
   updateDashboardConfigMock.mockReset()
   kirocrewConfigMock.mockReset()
   patchConfigMock.mockReset()
+  modelsMock.mockReset()
+  acpBackendsMock.mockReset()
   tipsStatusMock.mockReset()
   tipsFeedbackMock.mockReset()
   dashboardConfigMock.mockImplementation(() => Promise.resolve({ ...BASE_DASH }) as never)
   updateDashboardConfigMock.mockImplementation(() => Promise.resolve({}) as never)
   patchConfigMock.mockImplementation(() => Promise.resolve({}) as never)
+  modelsMock.mockImplementation(() => Promise.resolve([
+    { model_name: 'auto', description: 'Default' },
+    { model_name: 'claude-opus-4.8', description: 'Opus' },
+    { model_name: 'claude-haiku-4.5', description: 'Haiku' },
+  ]) as never)
+  acpBackendsMock.mockImplementation(() => Promise.resolve({
+    configured: '',
+    backends: [
+      { id: '', selectable: true },
+      { id: 'claude', selectable: true },
+      { id: 'codex', selectable: true },
+    ],
+  }) as never)
+  effortLevelsMock.mockImplementation(() =>
+    Promise.resolve(['low', 'medium', 'high', 'xhigh', 'max']) as never
+  )
   tipsStatusMock.mockImplementation(() =>
     Promise.resolve({ enabled_config: true, opted_out: false }) as never
   )
@@ -604,6 +637,134 @@ describe('ChatPanel — per-role models', () => {
   })
 })
 
+describe('ChatPanel — provider settings', () => {
+  it.each([
+    [0, 'agent.acp_backend', 'Claude Code'],
+    [1, 'agent.role_backends.background', 'Codex'],
+    [2, 'agent.role_backends.subagent', 'Claude Code'],
+  ])('persists the provider row at its own config path', async (index, path, optionName) => {
+    wrap()
+    const providers = await screen.findAllByRole('combobox', { name: 'Provider' })
+    await waitFor(() => providers.forEach(provider => expect(provider).not.toHaveAttribute('data-disabled')))
+    fireEvent.click(providers[index])
+    fireEvent.click(screen.getByRole('option', { name: optionName }))
+    const expected = optionName === 'Claude Code' ? 'claude' : 'codex'
+    await waitFor(() => expect(patchConfigMock).toHaveBeenCalledWith(path, expected))
+  })
+
+  it('keeps explicit Kiro CLI distinct from role inheritance', async () => {
+    acpBackendsMock.mockImplementation(() => Promise.resolve({
+      configured: 'codex',
+      backends: [
+        { id: '', selectable: true },
+        { id: 'codex', selectable: true },
+      ],
+    }) as never)
+    seedMc({ agent: { acp_backend: '', role_backends: { background: '', subagent: '' } } })
+    wrap()
+    const providers = await screen.findAllByRole('combobox', { name: 'Provider' })
+    await waitFor(() => providers.forEach(provider => expect(provider).not.toHaveAttribute('data-disabled')))
+    expect(providers[0]).toHaveTextContent('Kiro CLI')
+    expect(providers[1]).toHaveTextContent('Kiro CLI')
+    expect(providers[2]).toHaveTextContent('Kiro CLI')
+  })
+
+  it('uses a separate inheritance sentinel when a role backend is absent', async () => {
+    acpBackendsMock.mockImplementation(() => Promise.resolve({
+      configured: 'codex',
+      backends: [
+        { id: '', selectable: true },
+        { id: 'codex', selectable: true },
+      ],
+    }) as never)
+    seedMc({ agent: { acp_backend: '', role_backends: {} } })
+    wrap()
+    const providers = await screen.findAllByRole('combobox', { name: 'Provider' })
+    expect(providers[0]).toHaveTextContent('Kiro CLI')
+    expect(providers[1]).toHaveTextContent('Same as chat')
+    expect(providers[2]).toHaveTextContent('Same as chat')
+  })
+
+  it('clears a role backend when returning it to chat inheritance', async () => {
+    seedMc({ agent: { role_backends: { background: 'codex' } } })
+    wrap()
+    const providers = await screen.findAllByRole('combobox', { name: 'Provider' })
+    await waitFor(() => providers.forEach(provider => expect(provider).not.toHaveAttribute('data-disabled')))
+    fireEvent.click(providers[1])
+    fireEvent.click(screen.getByRole('option', { name: 'Same as chat' }))
+    await waitFor(() => expect(patchConfigMock).toHaveBeenCalledWith(
+      'agent.role_backends.background', null
+    ))
+  })
+
+  it('surfaces the provider-specific message when a provider write fails', async () => {
+    rejectOnce(patchConfigMock)
+    wrap()
+    const providers = await screen.findAllByRole('combobox', { name: 'Provider' })
+    await waitFor(() => providers.forEach(provider => expect(provider).not.toHaveAttribute('data-disabled')))
+    fireEvent.click(providers[0])
+    fireEvent.click(screen.getByRole('option', { name: 'Claude Code' }))
+    expect(await screen.findByText(/Failed to save provider/)).toBeInTheDocument()
+  })
+
+  it('loads role models from the provider selected for that role', async () => {
+    seedMc({ agent: { role_backends: { background: 'claude' } } })
+    let resolvePatch!: (value: unknown) => void
+    patchConfigMock.mockImplementationOnce(() => new Promise(resolve => {
+      resolvePatch = resolve
+    }) as never)
+    modelsMock.mockImplementation((_slot?: string, backend?: string) => Promise.resolve(
+      backend === 'codex'
+        ? [{ model_name: 'auto' }, { model_name: 'codex-role-model' }]
+        : [{ model_name: 'auto' }, { model_name: 'claude-role-model' }]
+    ) as never)
+    wrap()
+    await waitFor(() => expect(modelsMock).toHaveBeenCalledWith(undefined, 'claude'))
+
+    const providers = await screen.findAllByRole('combobox', { name: 'Provider' })
+    await waitFor(() => providers.forEach(provider => expect(provider).not.toHaveAttribute('data-disabled')))
+    fireEvent.click(providers[1])
+    fireEvent.click(screen.getByRole('option', { name: 'Codex' }))
+    await waitFor(() => expect(modelsMock).toHaveBeenCalledWith(undefined, 'codex'))
+    // The backend changes the role harness and clears its pin atomically. Keep
+    // model writes disabled until that transition has completed, otherwise a
+    // model from the new catalog can race validation against the old harness.
+    kirocrewConfigMock.mockImplementation(() => Promise.resolve({
+      ...BASE_MC,
+      agent: { ...BASE_MC.agent, role_backends: { background: 'codex' } },
+      dashboard: { ...BASE_MC.dashboard },
+      knowledge: { ...BASE_MC.knowledge },
+    }) as never)
+    resolvePatch({})
+
+    const trigger = await screen.findByRole('combobox', { name: 'Background Model' })
+    await waitFor(() => expect(trigger).not.toHaveAttribute('data-disabled'))
+    fireEvent.click(trigger)
+    await waitFor(() => expect(screen.getByRole('option', { name: 'codex-role-model' })).toBeInTheDocument())
+    const options = within(screen.getByRole('listbox')).getAllByRole('option')
+    expect(options.map(option => option.textContent)).toContain('codex-role-model')
+    expect(options.map(option => option.textContent)).not.toContain('claude-role-model')
+  })
+
+  it('lets the provider transition clear a role pin atomically', async () => {
+    seedMc({
+      agent: {
+        role_backends: { background: 'claude' },
+        role_models: { background: 'claude-role-model' },
+      },
+    })
+    wrap()
+    const providers = await screen.findAllByRole('combobox', { name: 'Provider' })
+    await waitFor(() => providers.forEach(provider => expect(provider).not.toHaveAttribute('data-disabled')))
+    fireEvent.click(providers[1])
+    fireEvent.click(screen.getByRole('option', { name: 'Codex' }))
+    await waitFor(() => expect(patchConfigMock).toHaveBeenCalledWith(
+      'agent.role_backends.background', 'codex'
+    ))
+    expect(patchConfigMock).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe('ChatPanel — per-role reasoning effort', () => {
   it.each([
     ['Background Effort', 'background', 'agent.role_efforts.background'],
@@ -631,8 +792,8 @@ describe('ChatPanel — per-role reasoning effort', () => {
   it.each([['Background Effort'], ['Subagent Effort']])(
     '%s is inert while the role inherits a non-reasoning chat default',
     async label => {
-      // Role model 'auto' resolves to the chat default, which is 'auto' here —
-      // not reasoning-capable, so the row stays visible but cannot be opened.
+      // Kiro resolves a role's Auto at session start, so its effort capability
+      // is unknown while the role has no concrete model pin.
       wrap()
       const trigger = await screen.findByRole('combobox', { name: label })
       await waitFor(() => expect(trigger).toHaveAttribute('data-disabled'))
@@ -642,9 +803,44 @@ describe('ChatPanel — per-role reasoning effort', () => {
     }
   )
 
-  it('enables the role effort row from the chat default when the role is on auto', async () => {
-    // The gate reads the RESOLVED model: no pin, so the chat default decides.
-    seedMc({ agent: { model: 'claude-opus-4.8' } })
+  it('offers the selected adapter its OWN ladder while the model is still Auto', async () => {
+    // The setup case: an operator has just picked Claude and has not chosen a
+    // model, so the model is Auto. `modelSupportsEffort('auto')` is false, which
+    // disabled the control exactly while it was being configured -- an adapter
+    // that REPORTS a ladder has already answered "can this reason" for whatever
+    // it resolves Auto to, so its live answer decides.
+    seedMc({ agent: { acp_backend: 'claude' } })
+    effortLevelsMock.mockImplementation(() =>
+      Promise.resolve(['default', 'low', 'high', 'max']) as never
+    )
+    wrap()
+
+    await openSelect('Default Reasoning Effort')
+
+    // Its own rungs, not the static frontend list: 'default' is a Claude rung
+    // and 'xhigh' is not in the ladder this harness reported.
+    expect(screen.getByRole('option', { name: 'High' })).toBeInTheDocument()
+    expect(screen.queryByRole('option', { name: 'Xhigh' })).not.toBeInTheDocument()
+  })
+
+  it('leaves the kiro effort row inert on Auto, because Auto resolves later there', async () => {
+    // Kiro picks the model at session start, so "can this reason" is genuinely
+    // unknown -- the relaxation above must not leak onto it.
+    seedMc({ agent: { acp_backend: '' } })
+    wrap()
+
+    const trigger = await screen.findByRole('combobox', { name: 'Default Reasoning Effort' })
+    await waitFor(() => expect(trigger).toHaveAttribute('data-disabled'))
+  })
+
+  it('enables a role effort row from its adapter ladder while the role is on auto', async () => {
+    // A role's Auto is resolved by its own harness and deliberately does not
+    // inherit the interactive chat model. Adapter ladders therefore enable the
+    // row even before that role has a concrete model pin.
+    seedMc({ agent: { role_backends: { background: 'claude' } } })
+    effortLevelsMock.mockImplementation(() =>
+      Promise.resolve(['default', 'low', 'high', 'max']) as never
+    )
     wrap()
     await openSelect('Background Effort')
     fireEvent.click(screen.getByRole('option', { name: 'Low' }))

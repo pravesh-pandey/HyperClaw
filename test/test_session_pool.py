@@ -598,51 +598,53 @@ class TestModelMatchesPoolDefault:
         pooled.client.set_model.assert_awaited_once_with("claude-sonnet-4.6")
 
     @pytest.mark.asyncio
-    async def test_pool_claude_backend_translates_canonical_key_on_switch(self):
-        """On the claude backend, a canonical wire key (e.g. opus-4.8-1m) is
-        translated to a provider id before set_model — else the adapter
-        mis-resolves it. kiro/acp backends still pass the value through."""
+    async def test_pool_external_adapter_switches_to_the_id_it_advertised(self):
+        """An own-catalog harness gets the requested id VERBATIM on a warm claim.
+
+        A registry translation here produced ``global.anthropic.…``, which is
+        outside the set claude-agent-acp advertises and which it refuses. Cold
+        start and warm claim now agree on the namespace, so the outcome no
+        longer depends on whether a pooled process happened to exist.
+        """
+        from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX
         from kiro_crew.providers.acp import AcpProvider
 
-        mgr, factory = _make_manager(pool_agent="kirocrew")
-        pooled = _make_provider()
-        pooled.__class__ = AcpProvider
-        pooled.client = MagicMock()
-        pooled.client.backend = "claude"  # marks this an AcpProvider(claude)
-        pooled.client.set_model = AsyncMock()
-        pooled.client.resumed = False
-        pooled.client._session_id = "fake-sid"
-        mgr._drain_and_claim = AsyncMock(return_value=pooled)
-        mgr._schedule_replenish = MagicMock()
+        for backend in (ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX):
+            mgr, factory = _make_manager(pool_agent="kirocrew")
+            pooled = _make_provider()
+            pooled.__class__ = AcpProvider
+            pooled.client = MagicMock()
+            pooled.client.backend = backend
+            pooled.client.set_model = AsyncMock()
+            pooled.client.resumed = False
+            pooled.client._session_id = "fake-sid"
+            mgr._drain_and_claim = AsyncMock(return_value=pooled)
+            mgr._schedule_replenish = MagicMock()
 
-        with patch.object(type(mgr), "_resolve_agent_model", return_value="default-model"):
-            await mgr.get_or_create("test-key", agent="kirocrew", model="opus-4.8-1m")
+            with patch.object(type(mgr), "_resolve_agent_model", return_value="default-model"):
+                await mgr.get_or_create("test-key", agent="kirocrew", model="opus")
 
-        pooled.client.set_model.assert_awaited_once_with("global.anthropic.claude-opus-4-8[1m]")
+            pooled.client.set_model.assert_awaited_once_with("opus")
 
     @pytest.mark.asyncio
-    async def test_pool_claude_backend_skips_redundant_switch_cross_namespace(self):
-        """The short-circuit must work ACROSS namespaces: a canonical wire key
-        and the pool agent's kiro model slot that resolve to the SAME provider id
-        must NOT trigger a redundant set_model. Requested 'opus-4.8-1m' vs pool
-        agent kiro 'claude-opus-4.6' both → the flagship provider id."""
+    async def test_pool_external_adapter_skips_a_switch_to_the_model_it_holds(self):
+        """No redundant set_model when the claimed process is already on the id."""
+        from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE
         from kiro_crew.providers.acp import AcpProvider
 
         mgr, factory = _make_manager(pool_agent="kirocrew")
         pooled = _make_provider()
         pooled.__class__ = AcpProvider
         pooled.client = MagicMock()
-        pooled.client.backend = "claude"
+        pooled.client.backend = ACP_BACKEND_CLAUDE
         pooled.client.set_model = AsyncMock()
         pooled.client.resumed = False
         pooled.client._session_id = "fake-sid"
         mgr._drain_and_claim = AsyncMock(return_value=pooled)
         mgr._schedule_replenish = MagicMock()
 
-        # pool agent's kiro model 'claude-opus-4.6' translates to the SAME
-        # flagship provider id as the requested canonical 'opus-4.8-1m'.
-        with patch.object(type(mgr), "_resolve_agent_model", return_value="claude-opus-4.6"):
-            await mgr.get_or_create("test-key", agent="kirocrew", model="opus-4.8-1m")
+        with patch.object(type(mgr), "_resolve_agent_model", return_value="opus"):
+            await mgr.get_or_create("test-key", agent="kirocrew", model="opus")
 
         pooled.client.set_model.assert_not_awaited()
 
@@ -1181,8 +1183,9 @@ class TestDefaultProjectDir:
     def test_returns_empty_when_sensitive(self, tmp_path):
         ws = tmp_path / "workspace"
         ws.mkdir()
-        with patch("kiro_crew.config.loader.workspace_dir_for", return_value=ws), patch(
-            "kiro_crew.security.is_sensitive_path", return_value=True
+        with (
+            patch("kiro_crew.config.loader.workspace_dir_for", return_value=ws),
+            patch("kiro_crew.security.is_sensitive_path", return_value=True),
         ):
             from kiro_crew.config.loader import default_project_dir
 
@@ -1297,6 +1300,7 @@ class TestPoolCwd:
 # Discard reaping — a discarded provider's OS process must actually die
 # ---------------------------------------------------------------------------
 
+
 class TestDiscardReaping:
     """A discard removes the provider from all pool bookkeeping, so the
     discard path is the last chance to signal the process. These tests pin
@@ -1383,10 +1387,10 @@ class TestDiscardReaping:
         # test had already bounded, to 0.05s. A dedicated executor keeps the
         # assertion about escalation ordering instead of about the shared pool's
         # spare capacity.
-        with ThreadPoolExecutor(max_workers=1) as private_executor, patch(
-            "kiro_crew.session._sync_kill_provider"
-        ) as mock_kill, patch(
-            "kiro_crew.session.subprocess_executor", return_value=private_executor
+        with (
+            ThreadPoolExecutor(max_workers=1) as private_executor,
+            patch("kiro_crew.session._sync_kill_provider") as mock_kill,
+            patch("kiro_crew.session.subprocess_executor", return_value=private_executor),
         ):
             pooled = await asyncio.wait_for(mgr._drain_and_claim("kirocrew"), timeout=5)
 
@@ -1541,14 +1545,16 @@ class TestDiscardReaping:
             done.set()
 
         provider = _make_provider()
-        with patch("kiro_crew.session.subprocess_executor", return_value=dead_executor), \
-                patch("kiro_crew.session._sync_kill_provider", side_effect=_record_thread):
+        with (
+            patch("kiro_crew.session.subprocess_executor", return_value=dead_executor),
+            patch("kiro_crew.session._sync_kill_provider", side_effect=_record_thread),
+        ):
             SessionManager._dispatch_hard_kill(provider)
 
         assert done.wait(timeout=5), "fallback kill was never dispatched"
-        assert called_on[0] is not threading.main_thread(), (
-            "fallback kill ran inline on the event-loop thread"
-        )
+        assert (
+            called_on[0] is not threading.main_thread()
+        ), "fallback kill ran inline on the event-loop thread"
 
     @pytest.mark.asyncio
     async def test_one_failing_hard_kill_does_not_abort_batch_discard(self):
@@ -1573,7 +1579,7 @@ class TestDiscardReaping:
         with patch("kiro_crew.session._sync_kill_provider", side_effect=_kill):
             await mgr._sweep_warm_pool_once()
 
-        assert first in attempted and second in attempted, (
-            "a failing hard kill aborted the batch and leaked later providers"
-        )
+        assert (
+            first in attempted and second in attempted
+        ), "a failing hard kill aborted the batch and leaked later providers"
         assert mgr._warm_pool.qsize() == 0

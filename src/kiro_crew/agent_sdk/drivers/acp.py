@@ -39,8 +39,12 @@ __all__ = [
     "claude_adapter_cached_negative",
     "claude_adapter_install_command",
     "claude_components_resolve",
+    "codex_adapter_cached_negative",
+    "codex_adapter_install_command",
+    "codex_adapter_resolves",
     "derived_agent_permissions",
     "kiro_cli_resolves",
+    "opencode_resolves",
 ]
 
 
@@ -141,3 +145,40 @@ def claude_adapter_install_command() -> str:
     from kiro_crew.acp.client import CLAUDE_ACP_NPM_PKG
 
     return f"npm i -g {CLAUDE_ACP_NPM_PKG}"
+
+
+def codex_adapter_resolves() -> bool:
+    """Whether the exact ``codex-acp`` adapter spawn resolver succeeds."""
+    from kiro_crew.acp.client import _resolve_codex_acp_bin
+
+    argv, _searched_path = _resolve_codex_acp_bin()
+    return bool(argv)
+
+
+def codex_adapter_cached_negative() -> bool:
+    """Whether this gateway cached ``codex-acp`` as absent."""
+    from kiro_crew.acp import client as _client
+
+    cached = getattr(_client, "_codex_acp_argv_cache", None)
+    if cached is None or cached is getattr(_client, "_UNRESOLVED", object()):
+        return False
+    try:
+        argv, _searched = cached  # type: ignore[misc]
+    except Exception:
+        return False
+    return not argv
+
+
+def codex_adapter_install_command() -> str:
+    """Global npm install command for the adapter package Crew spawns."""
+    from kiro_crew.acp.client import CODEX_ACP_NPM_PKG
+
+    return f"npm i -g {CODEX_ACP_NPM_PKG}"
+
+
+def opencode_resolves() -> bool:
+    """Whether the same native executable used by OpenCode ACP resolves."""
+    from kiro_crew.acp.client import _resolve_opencode_bin
+
+    executable, _searched_path = _resolve_opencode_bin()
+    return bool(executable)

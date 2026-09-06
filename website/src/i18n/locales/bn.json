@@ -5418,7 +5418,6 @@
       "earlier_messages_open_session": "পূর্ববর্তী বার্তা — সম্পূর্ণ সেশন খুলুন (বিভক্ত ভিউ বন্ধ হবে)",
       "earlier_messages_unavailable": "পূর্ববর্তী বার্তাগুলি এই সেশনের ইতিহাসে আর পাওয়া যাচ্ছে না।",
       "forked_from": "{{name}} থেকে ফর্ক করা হয়েছে",
-      "model_list": "মডেল তালিকা",
       "session_ready_type_a_message_to_start": "সেশন প্রস্তুত। শুরু করতে একটি বার্তা লিখুন।",
       "split_down": "নিচে ভাগ করুন",
       "split_right": "ডানে ভাগ করুন",
@@ -6365,7 +6364,25 @@
       "reasoning": "রিজনিং",
       "set_default_for_agent": "<model/>-কে <agent/>-এর ডিফল্ট মডেল করো",
       "set_default_for_new_sessions": "নতুন সেশনের জন্য গ্লোবাল ডিফল্ট…",
-      "type_to_filter": "ফিল্টার করতে টাইপ করুন…"
+      "type_to_filter": "ফিল্টার করতে টাইপ করুন…",
+      "provider": "প্রোভাইডার",
+      "provider_list": "প্রোভাইডার তালিকা",
+      "providers": "প্রোভাইডার",
+      "opencode": "OpenCode",
+      "loading_providers": "প্রোভাইডার লোড হচ্ছে…",
+      "could_not_load_providers": "প্রোভাইডার লোড করা যায়নি।",
+      "external_adapter_disclosure": "বাহ্যিক অ্যাডাপ্টারগুলি নিজেদের অনুমতি ব্যবহার করে এবং Crew MCP টুল ছাড়াই শুরু হয়। তাদের কনফিগারেশনে আগে থেকে অনুমোদিত টুলগুলি Crew-এর অনুমোদন ও অডিট নিয়ন্ত্রণ এড়িয়ে যেতে পারে।",
+      "invalid_backend": "এই বিল্ডে এই প্রোভাইডার বেছে নেওয়া যায় না।",
+      "backend_unavailable": "এই মেশিনে প্রোভাইডারটি উপলভ্য নয়।",
+      "backend_unavailable_with_command": "এই মেশিনে প্রোভাইডারটি উপলভ্য নয়। ইনস্টল করুন: {{command}}",
+      "installed_restart_required": "এই মেশিনে ইনস্টল করা আছে, কিন্তু ব্যবহারের আগে গেটওয়ে রিস্টার্ট করতে হবে।",
+      "missing_components": "এই মেশিনে অনুপস্থিত: {{components}}",
+      "missing_components_with_command": "এই মেশিনে অনুপস্থিত: {{components}}। ইনস্টল করুন: {{command}}",
+      "claude_code": "Claude Code",
+      "codex": "Codex",
+      "kas_kiro_agent": "KAS (kiro-agent)",
+      "kiro_cli": "Kiro CLI",
+      "same_as_chat": "চ্যাটের মতো"
     },
     "monacoCodeBlock": {
       "close_editor": "এডিটর বন্ধ করুন",
@@ -9743,25 +9760,6 @@
       "pod_homes_left_on_disk_with_no_live_pod": "কোনও সক্রিয় পড ছাড়াই ডিস্কে থাকা পড হোম"
     },
     "developer": {
-      "agentBackendTab": {
-        "agent_backend": "এজেন্ট ব্যাকএন্ড",
-        "claude_code": "Claude Code",
-        "claude_uses_its_own_permissions": "Claude Code সাধারণত কাজ করার আগে অনুমতি চায়, এবং {{productName}} সেই অনুরোধ যাচাই করে। কিন্তু Claude-এর নিজের সেটিংসে আগেই অনুমোদিত টুল — প্রকল্পের ভিতরের .claude/settings.json সহ — কিছু জিজ্ঞাসা করে না, তাই অস্বীকৃতির নিয়ম ও অডিট লগ সেই কলটি দেখতে পায় না।",
-        "could_not_load_the_agent_backend": "এজেন্ট ব্যাকএন্ড লোড করা যায়নি।",
-        "could_not_save_the_agent_backend": "এজেন্ট ব্যাকএন্ড সংরক্ষণ করা যায়নি।",
-        "default_all_features_supported": "ডিফল্ট। সব বৈশিষ্ট্য সমর্থিত।",
-        "experimental": "পরীক্ষামূলক",
-        "install_check_failed": "এই মেশিনে এটি ইনস্টল করা আছে কিনা তা যাচাই করা যায়নি।",
-        "installed_restart_required": "এই মেশিনে ইনস্টল করা আছে, তবে ব্যবহারের আগে এই gateway পুনরায় চালু করতে হবে।",
-        "kas_kiro_agent": "KAS (kiro-agent)",
-        "kiro_cli": "Kiro CLI",
-        "loading_configuration": "কনফিগারেশন লোড হচ্ছে…",
-        "missing_components": "এই মেশিনে অনুপস্থিত: {{components}}",
-        "missing_components_with_command": "এই মেশিনে অনুপস্থিত: {{components}}। ইনস্টল করুন: {{command}}",
-        "new_sessions_use_this_agent_a_session_that_is_al": "নতুন সেশনগুলি এই এজেন্ট ব্যবহার করে। ইতিমধ্যে খোলা সেশন যে এজেন্টে শুরু হয়েছিল সেটিই ধরে রাখে — এখানে বদলালে চলমান সেশন বদলায় না।",
-        "retry": "আবার চেষ্টা করুন",
-        "set_is_fixed_at_gateway_start": "এখানে কোন এজেন্টগুলি দেখা যাবে তা gateway চালু হওয়ার সময় নির্ধারিত হয়। পরিচালিত ডিপ্লয়মেন্ট নীতির মাধ্যমে এই সেট সীমিত করতে পারে; নীতি সম্পাদনা পরবর্তী চালুর সময় কার্যকর হয়।"
-      },
       "featurePreviewsTab": {
         "crew": "Crew",
         "inbound_webhook_tokens_registered_contexts_and_r": "ইনবাউন্ড ওয়েবহুক টোকেন, নিবন্ধিত কনটেক্সট ও রান ইতিহাস। API কাজ করে, তবে পেজটি এখনও শেষ হয়নি।",
@@ -9773,10 +9771,6 @@
     "developerPage": {
       "developer": "ডেভেলপার",
       "tabs": {
-        "agentBackend": {
-          "description": "নতুন সেশন কোন এজেন্ট চালু করে — Kiro CLI, Claude Code বা KAS",
-          "label": "এজেন্ট ব্যাকএন্ড"
-        },
         "archive": {
           "description": "রোটেট/সংক্ষিপ্ত করা সেশন ইতিহাস (7 দিন সংরক্ষণ)",
           "label": "আর্কাইভ"
@@ -11858,6 +11852,7 @@
         "failed_to_save_profile": "প্রোফাইল সেভ করা যায়নি",
         "failed_to_save_role_effort": "রোল এফোর্ট সংরক্ষণ ব্যর্থ হয়েছে",
         "failed_to_save_role_model": "রোল মডেল সংরক্ষণ ব্যর্থ হয়েছে",
+        "failed_to_save_provider": "প্রোভাইডার সেভ করা যায়নি",
         "failed_to_save_session_summaries": "সেশন সারসংক্ষেপ সেটিং সংরক্ষণ করা যায়নি",
         "failed_to_save_soft_stop_budget": "সফট-স্টপ বাজেট সেভ করা যায়নি",
         "failed_to_save_tips_preference": "টিপস পছন্দ সেভ করা যায়নি",

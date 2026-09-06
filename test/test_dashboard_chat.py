@@ -17999,6 +17999,7 @@ class TestSlotModelLiveSwitch:
         change_effort: bool = True,
     ):
         """A live AcpProvider double. ``spec=`` keeps isinstance() working."""
+        from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE, ACP_BACKEND_KIRO
         from kiro_crew.providers.acp import AcpProvider
 
         provider = MagicMock(spec=AcpProvider)
@@ -18009,6 +18010,11 @@ class TestSlotModelLiveSwitch:
         provider.change_effort = AsyncMock(return_value=change_effort)
         provider.clear_effort = AsyncMock(return_value=False)
         provider.client = MagicMock()
+        # A concrete backend STRING, not just the boolean: harness capability is
+        # membership in a named set read off ``client.backend`` (harness-parity
+        # H5/H6), so a double that carries only the boolean silently exercises
+        # the kiro branch while claiming to test Claude.
+        provider.client.backend = ACP_BACKEND_CLAUDE if claude else ACP_BACKEND_KIRO
         provider.client.set_model = AsyncMock()
         return provider
 
@@ -18141,14 +18147,51 @@ class TestSlotModelLiveSwitch:
         state.sessions.reset.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_claude_backend_switch_uses_provider_id(self, tmp_path):
+    async def test_a_pick_for_another_harness_resets_instead_of_switching_live(self, tmp_path):
+        """The reported failure: a Claude pick refused against Codex's catalog.
+
+        After the slot is pointed at a new harness its live process is still the
+        old one for a moment. A model id means something only inside ONE
+        harness's namespace, so sending Claude's ``sonnet`` to that live Codex
+        process asked the wrong harness -- and its refusal named an account
+        entitlement (``gpt-5.6-sol, gpt-5.6-terra, ...``) that had nothing to do
+        with the real cause. The reset respawns on the selected harness, where
+        the id is meaningful.
+        """
+        from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX
+
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        provider = self._provider()  # live process is still Codex
+        provider.client.backend = ACP_BACKEND_CODEX
+        state.sessions.get_provider = MagicMock(return_value=provider)
+        state.get_or_create_slot("a", model="gpt-5.6-sol")
+        state._slots["a"].acp_backend = ACP_BACKEND_CLAUDE  # the slot now selects Claude
+        state.push_slots_update = MagicMock()
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post("/api/chat/slots/a/model", json={"model": "sonnet"})
+
+        assert resp.status == 200
+        # Never sent to the wrong harness, and the slot took the reset path.
+        provider.client.set_model.assert_not_awaited()
+        state.sessions.reset.assert_awaited()
+        assert state._slots["a"].model == "sonnet"
+
+    @pytest.mark.asyncio
+    async def test_claude_backend_switch_sends_the_id_verbatim(self, tmp_path):
         from kiro_crew import model_registry
+        from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE
 
         state = _make_state(tmp_path)
         state.sessions.reset = AsyncMock()
         provider = self._provider(claude=True)
         state.sessions.get_provider = MagicMock(return_value=provider)
         state.get_or_create_slot("a", model="claude-opus-4.6")
+        # The slot runs the harness its live provider is on. Without this it
+        # INHERITS the configured harness (kiro in a default test config), which
+        # is the stale-harness state the live switch must refuse.
+        state._slots["a"].acp_backend = ACP_BACKEND_CLAUDE
         state.push_slots_update = MagicMock()
 
         async with TestClient(TestServer(self._app(state))) as client:
@@ -18156,7 +18199,10 @@ class TestSlotModelLiveSwitch:
 
         assert resp.status == 200
         sent = provider.client.set_model.await_args.args[0]
-        assert sent == model_registry.to_provider_id("claude-opus-4.8", "claude_code")
+        # Verbatim: claude-agent-acp accepts the ids it advertised and refuses a
+        # registry translation (``global.anthropic.…`` -> -32603).
+        assert sent == "claude-opus-4.8"
+        assert sent != model_registry.to_provider_id("claude-opus-4.8", "claude_code")
         state.sessions.reset.assert_not_awaited()
 
     @pytest.mark.asyncio

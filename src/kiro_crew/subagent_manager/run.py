@@ -42,6 +42,7 @@ if TYPE_CHECKING:
         _describe_exception,
         _redact,
         _resolved_model_of,
+        _subagent_default_backend,
         _subagent_default_effort,
         _subagent_default_model,
         _timeout_context,
@@ -666,6 +667,21 @@ class RunEventCoordinator(ManagerComponent):
         eff_effort = info.reasoning_effort or _subagent_default_effort()
         if eff_effort:
             extra_kwargs["reasoning_effort_override"] = eff_effort
+        # Sub-agent harness pin (agent.role_backends['subagent']). An unpinned
+        # role inherits the actual parent slot harness when that slot selected a
+        # per-session backend, rather than the global chat default.
+        parent_backend: str | None = None
+        try:
+            parent_provider = self._manager._sessions.get_provider(info.parent_session_key)
+            parent_backend = getattr(parent_provider, "backend", None)
+            if not isinstance(parent_backend, str):
+                parent_client = getattr(parent_provider, "client", None)
+                parent_backend = getattr(parent_client, "backend", None)
+        except Exception:
+            parent_backend = None
+        eff_backend = _subagent_default_backend(parent_backend)
+        if eff_backend is not None:
+            extra_kwargs["acp_backend_override"] = eff_backend
         if info.bare:
             extra_kwargs["bare"] = True
         if info.allowed_tools:
@@ -696,7 +712,12 @@ class RunEventCoordinator(ManagerComponent):
         # dedicated process path so the override in extra_kwargs actually reaches
         # get_or_create -> the provider factory; otherwise a configured sub-agent
         # model/effort would silently no-op on the default (session-sharing) path.
-        if eff_model or eff_effort:
+        #
+        # A harness pin is the same rule, one step stronger: the parent's shared
+        # runtime is a different BINARY, not merely a different model on the same
+        # one, so sharing it would run the sub-agent on the harness the operator
+        # moved it off. That is the whole point of the pin, so it must win.
+        if eff_model or eff_effort or eff_backend is not None:
             use_session_sharing = False
         if use_session_sharing:
             try:

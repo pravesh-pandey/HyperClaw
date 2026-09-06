@@ -22,7 +22,16 @@ from aiohttp.client_exceptions import ClientConnectionResetError
 
 import kiro_crew
 from kiro_crew import beacon, platform_compat, stt
-from kiro_crew.acp_backends import selectable_backend_values
+from kiro_crew.acp_backends import (
+    ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_CODEX,
+    ACP_BACKEND_KAS,
+    ACP_BACKEND_KIRO,
+    ACP_BACKEND_OPENCODE,
+    resolve_selected_backend,
+    selectable_backend_values,
+    selectable_backends,
+)
 from kiro_crew.computer_use.types import MAX_SCREENSHOT_MAX_PX as _CU_MAX_SCREENSHOT_MAX_PX
 from kiro_crew.computer_use.types import MAX_TREE_NODES_LIMIT as _CU_MAX_TREE_NODES_LIMIT
 from kiro_crew.computer_use.types import MIN_SCREENSHOT_MAX_PX as _CU_MIN_SCREENSHOT_MAX_PX
@@ -45,6 +54,7 @@ from kiro_crew.config.loader import (
     POOL_TTL_SECS_MIN,
     RECENT_TINT_COUNT_MAX,
     RECENT_TINT_COUNT_MIN,
+    ROLE_BACKEND_KEYS,
     SESSION_TIMEOUT_MAX,
     SESSION_TIMEOUT_MIN,
     SOFT_STOP_BUDGET_MAX,
@@ -1452,13 +1462,15 @@ def _agent_values() -> set[str]:
     return {"", *KiroCrewConfig.load().agents}
 
 
-def _active_advertised_ids(request: web.Request) -> list[str] | None:
+def _active_advertised_ids(request: web.Request, backend: str | None = None) -> list[str] | None:
     """Advertised model ids from the first active provider, or None if unknown.
 
     Uses the shared :func:`advertised_model_ids` shape parser so this
     validation sees exactly what the session-init withhold check sees. Returns
     ``None`` when no session has initialized / nothing was advertised, so callers
-    treat entitlement as UNKNOWN rather than denying on no evidence.
+    treat entitlement as UNKNOWN rather than denying on no evidence. When a
+    backend is supplied, providers for other harnesses are skipped so a Kiro
+    snapshot cannot reject a valid Codex or Claude model during a config edit.
     """
     from kiro_crew.acp.client import advertised_model_ids
 
@@ -1466,7 +1478,35 @@ def _active_advertised_ids(request: web.Request) -> list[str] | None:
         providers = request.app["state"].sessions.active_providers()
     except (KeyError, AttributeError):
         return None
+    backend_by_provider = {
+        "acp": ACP_BACKEND_KIRO,
+        "claude_code": ACP_BACKEND_CLAUDE,
+        "codex": ACP_BACKEND_CODEX,
+        "opencode": ACP_BACKEND_OPENCODE,
+        "kas": ACP_BACKEND_KAS,
+    }
+    target_backend = backend_by_provider.get(backend or "")
+    if target_backend is None and backend in {
+        ACP_BACKEND_KIRO,
+        ACP_BACKEND_CLAUDE,
+        ACP_BACKEND_CODEX,
+        ACP_BACKEND_OPENCODE,
+        ACP_BACKEND_KAS,
+    }:
+        target_backend = backend
     for provider in providers:
+        if target_backend is not None:
+            client = getattr(provider, "client", None)
+            actual_backend = getattr(client, "backend", None)
+            if not isinstance(actual_backend, str):
+                actual_backend = getattr(provider, "backend", None)
+            # Unknown test doubles remain fail-open; real providers expose a
+            # concrete backend string and are scoped to the requested harness.
+            if isinstance(actual_backend, str):
+                if actual_backend in {target_backend}:
+                    pass
+                else:
+                    continue
         getter = getattr(provider, "available_models", None)
         if not callable(getter):
             continue
@@ -1479,12 +1519,33 @@ def _active_advertised_ids(request: web.Request) -> list[str] | None:
     return None
 
 
+def _validation_backend_for(path_key: str) -> str | None:
+    """The harness a model pin at *path_key* must be validated against.
+
+    A per-role pin may name a model that only the ROLE's harness serves — that
+    is the whole point of ``agent.role_backends``. Validating it against the
+    chat harness rejects every legitimate cross-harness pin (a Codex model
+    measured against Claude's advertised set), which is exactly the failure this
+    resolves. ``None`` means "no opinion"; the caller then falls back to the
+    configured chat harness as before.
+    """
+    prefix = "agent.role_models."
+    if not path_key.startswith(prefix):
+        return None
+    role = path_key[len(prefix) :]
+    try:
+        return KiroCrewConfig.load().agent.resolve_backend(role)
+    except Exception:  # pragma: no cover - config load is resilient
+        return None
+
+
 def _validate_role_model(
-    value: str, request: web.Request, provider: str | None = None
+    value: str, request: web.Request, provider: str | None = None, path_key: str = ""
 ) -> str | None:
     """Reject a per-role model pin the account cannot use; ``None`` = allow.
 
-    ``""`` / ``"auto"`` always allow (they defer to the chat default). Otherwise
+    ``""`` / ``"auto"`` always allow (they defer to the role's provider default).
+    Otherwise
     reuse the per-session provider guard (rejects display-only canonical keys for
     the active provider), then — when a live advertised set is known — apply the
     SAME entitlement predicate the session-init withhold uses
@@ -1504,13 +1565,48 @@ def _validate_role_model(
     reason = _model_rejected_reason(value, provider=provider)
     if reason:
         return reason
-    advertised = _active_advertised_ids(request)
+    validation_provider = provider
+    if validation_provider is None:
+        try:
+            selected = KiroCrewConfig.load().agent
+            validation_provider = selected.acp_backend or selected.provider
+        except Exception:  # pragma: no cover - config load is resilient
+            validation_provider = None
+    advertised = _active_advertised_ids(request, validation_provider)
     if advertised is None:
         return None
     if model_is_unusable(value, advertised):
         usable = ", ".join(advertised[:8]) or "auto"
+        # Name the HARNESS when the role is only borrowing one. An entitlement
+        # message is the wrong diagnosis for a cross-harness pin and sends the
+        # reader to their billing page: pinning a Codex model for a role that
+        # inherits the Claude chat harness is refused because it is measured
+        # against Claude's catalog, and the remedy is the role's own
+        # ``role_backends`` entry -- which the message has to name, because the
+        # rejected value is the operator's evidence that they wanted it.
+        role = (
+            path_key[len("agent.role_models.") :]
+            if path_key.startswith("agent.role_models.")
+            else ""
+        )
+        if role and _role_backend_is_inherited(role):
+            return (
+                f"{value!r} is not a model the {validation_provider or 'chat'!r} harness "
+                f"serves, and the {role} role is currently using it. Set this role's "
+                f"Provider first (agent.role_backends.{role}), then pick its model — "
+                f"or choose one of: {usable}, or 'auto'."
+            )
         return f"{value!r} is not available on your account; choose one of: {usable}, or 'auto'."
     return None
+
+
+def _role_backend_is_inherited(role: str) -> bool:
+    """True when *role* has no harness of its own and borrows the chat one."""
+    try:
+        role_backends = KiroCrewConfig.load().agent.role_backends
+    except Exception:  # pragma: no cover - config load is resilient
+        return False
+    return not isinstance(role_backends, dict) or role_backends.get(role) is None
 
 
 # Keys a caller may reasonably try to PATCH that have a dedicated endpoint whose
@@ -1542,6 +1638,41 @@ def _selectable_acp_backends() -> list[str]:
     return selectable_backend_values()
 
 
+def _selectable_role_backends() -> list[str]:
+    """Selectable harnesses for a per-role pin.
+
+    Derived from :func:`_selectable_acp_backends` rather than re-listing, so a
+    harness an edition registers is offered to the role pins the moment it is
+    offered to the chat pin. The empty string is Kiro's real wire id and is an
+    explicit role pin; an absent role key is the separate inherit sentinel.
+    """
+    return _selectable_acp_backends()
+
+
+def _effective_role_backend_from_raw(agent_data: object, role: str) -> str:
+    """Resolve a role's backend while a raw config update is under its lock.
+
+    This mirrors ``AgentConfig.resolve_backend`` without loading the config a
+    second time. It intentionally ignores malformed or unselectable role pins,
+    because the loader drops those and the role consequently inherits chat.
+    """
+    if not isinstance(agent_data, dict):
+        return ACP_BACKEND_KIRO
+    chat_backend = resolve_selected_backend(agent_data.get("acp_backend"))
+    role_backends = agent_data.get("role_backends")
+    if not isinstance(role_backends, dict):
+        return chat_backend
+    role_backend = role_backends.get(role)
+    if not isinstance(role_backend, str):
+        return chat_backend
+    normalized = role_backend.strip()
+    if normalized == "":
+        return ACP_BACKEND_KIRO
+    if normalized in selectable_backends():
+        return resolve_selected_backend(normalized)
+    return chat_backend
+
+
 _EDITABLE_CONFIG: dict[str, dict] = {
     "agent.provider": {"type": "enum", "values": ["acp"]},
     # Which ACP agent drives a session: "" = kiro-cli, "kas" = kiro-agent.
@@ -1564,7 +1695,7 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     "agent.model": {"type": "str", "max_len": 64, "pattern": r"^[A-Za-z0-9._\-\[\]]*$"},
     # Per-task-class model overrides. Same grammar as agent.model (the real
     # vocabulary is whatever the backend advertises). "" / "auto" defers to the
-    # chat default. `validate_fn` additionally rejects a well-formed id the
+    # role's provider default. `validate_fn` additionally rejects a well-formed id the
     # active provider or the account's entitlement cannot honor.
     "agent.role_models.background": {
         "type": "str",
@@ -1588,6 +1719,18 @@ _EDITABLE_CONFIG: dict[str, dict] = {
         "max_len": 64,
         "pattern": r"^[A-Za-z0-9._\-\[\]]*$",
         "validate_fn": _validate_role_model,
+    },
+    # Per-task-class harness overrides, paired with role_models. Same value set
+    # as agent.acp_backend and read from the SAME derivation, so the role pins
+    # and the chat pin cannot disagree about what is selectable. The empty string
+    # is an explicit Kiro pin; an absent key means inherit the chat harness.
+    "agent.role_backends.background": {
+        "type": "enum",
+        "values_fn": _selectable_role_backends,
+    },
+    "agent.role_backends.subagent": {
+        "type": "enum",
+        "values_fn": _selectable_role_backends,
     },
     "agent.reasoning_effort": {"type": "enum", "values": ["", *EFFORT_LEVELS]},
     # Per-role reasoning effort, paired with role_models. Same enum as the chat
@@ -1884,7 +2027,11 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
         # when an edition registers a backend. A static ``values`` list would be
         # read before that happened.
         allowed = list(spec["values_fn"]()) if "values_fn" in spec else spec["values"]
-        if value not in allowed:
+        # ``null`` means remove a role-backend key so that the role inherits the
+        # chat harness. It is deliberately accepted only for these two editable
+        # paths; ``""`` remains a valid explicit Kiro pin.
+        role_backend_reset = path_key.startswith("agent.role_backends.") and value is None
+        if not role_backend_reset and value not in allowed:
             return _deny(f"invalid value, must be one of {allowed}", f"{path_key}={value}")
     elif spec["type"] == "int":
         try:
@@ -1923,7 +2070,10 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
             return _deny(f"invalid value for {path_key}", f"{path_key}={value}")
         validate_fn = spec.get("validate_fn")
         if validate_fn:
-            reason = validate_fn(value, request)
+            # Per-role model pins validate against the ROLE's harness, not the
+            # chat one, so a pin naming a model only that harness serves is not
+            # rejected for being absent from chat's advertised set.
+            reason = validate_fn(value, request, _validation_backend_for(path_key), path_key)
             if reason:
                 return _deny(reason, f"{path_key}={value}")
     elif spec["type"] == "dict":
@@ -2096,6 +2246,7 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
     cfg_path = config_path()
     from kiro_crew.dashboard.handlers.agents import _get_config_lock  # noqa: F811
 
+    cleared_role_models: set[str] = set()
     async with _get_config_lock():
         parts = path_key.split(".")
 
@@ -2106,13 +2257,52 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
             # ("agent.model"), and 3-level ("agent.role_models.background") —
             # instead of special-cases that would clobber a whole section for a
             # 3-level key.
+            changes_backend = path_key == "agent.acp_backend" or path_key.startswith(
+                "agent.role_backends."
+            )
+            agent_data = data.get("agent")
+            previous_role_backends = (
+                {
+                    role: _effective_role_backend_from_raw(agent_data, role)
+                    for role in ROLE_BACKEND_KEYS
+                }
+                if changes_backend
+                else {}
+            )
+            previous_chat_backend = resolve_selected_backend(
+                agent_data.get("acp_backend") if isinstance(agent_data, dict) else None
+            )
             section = data
             for part in parts[:-1]:
                 nxt = section.setdefault(part, {})
                 if not isinstance(nxt, dict):
                     raise ValueError(f"config section '{part}' is not an object")
                 section = nxt
-            section[parts[-1]] = value
+            if path_key.startswith("agent.role_backends."):
+                role = parts[-1]
+                if value is None:
+                    # Deletion is the persisted representation of inheritance;
+                    # storing null would be discarded on load and would make a
+                    # raw-config reader disagree with the effective config.
+                    section.pop(role, None)
+                else:
+                    section[role] = value
+            else:
+                section[parts[-1]] = value
+            agent_data = data.get("agent")
+            if changes_backend and isinstance(agent_data, dict):
+                # Model ids belong to a harness. Clear them in the same locked
+                # write so neither another request nor a failed UI follow-up can
+                # pair the new harness with a model from the previous catalog.
+                if path_key == "agent.acp_backend" and previous_chat_backend != value:
+                    agent_data.pop("model", None)
+                role_models = agent_data.get("role_models")
+                for role, previous_backend in previous_role_backends.items():
+                    if previous_backend == _effective_role_backend_from_raw(agent_data, role):
+                        continue
+                    if isinstance(role_models, dict) and role in role_models:
+                        role_models.pop(role)
+                        cleared_role_models.add(role)
             return data
 
         try:
@@ -2176,7 +2366,7 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
         # kill in-flight turns on live sessions, which keep the backend they
         # were started on.
         "agent.acp_backend",
-    ) or path_key.startswith("agent.role_efforts."):
+    ) or path_key.startswith(("agent.role_efforts.", "agent.role_backends.")):
         state = request.app["state"]
         await state.sessions.refresh_defaults()
         logger.info("%s set to %r — session defaults refreshed", path_key, value)
@@ -2184,16 +2374,14 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
     # The background role model is baked into the lite / heartbeat kiro specs at
     # agent-build time, so a change must rewrite them to take effect without a
     # restart. The subagent role is read live at spawn (_subagent_default_model),
-    # so it needs no rebuild. Chat-default inheritance for both roles is picked
-    # up by the refresh_defaults above when agent.model changes.
-    if path_key == "agent.role_models.background":
+    # so it needs no rebuild. A backend switch that clears the background pin has
+    # the same effective-model change and must rebuild those specs as well.
+    if path_key == "agent.role_models.background" or "background" in cleared_role_models:
         try:
             from kiro_crew.agent import rebuild_agent_config
 
             await asyncio.to_thread(rebuild_agent_config)
-            logger.info(
-                "agent.role_models.background set to %r — background agent specs rebuilt", value
-            )
+            logger.info("background role setting changed — background agent specs rebuilt")
         except Exception:
             logger.warning("background-model rebuild failed", exc_info=True)
 

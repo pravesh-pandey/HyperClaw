@@ -5329,7 +5329,6 @@
       "earlier_messages_open_session": "以前のメッセージ — セッション全体を開く（分割表示を閉じます）",
       "earlier_messages_unavailable": "以前のメッセージはこのセッションの履歴では利用できなくなりました。",
       "forked_from": "{{name}} からフォーク",
-      "model_list": "モデルリスト",
       "session_ready_type_a_message_to_start": "セッション準備完了。メッセージを入力して開始してください。",
       "split_down": "下に分割",
       "split_right": "右に分割",
@@ -6267,7 +6266,25 @@
       "reasoning": "推論",
       "set_default_for_agent": "<model/> を <agent/> のデフォルトモデルに設定",
       "set_default_for_new_sessions": "新規セッションのグローバルデフォルト…",
-      "type_to_filter": "フィルターするには入力…"
+      "type_to_filter": "フィルターするには入力…",
+      "provider": "プロバイダー",
+      "provider_list": "プロバイダー一覧",
+      "providers": "プロバイダー",
+      "opencode": "OpenCode",
+      "loading_providers": "プロバイダーを読み込み中…",
+      "could_not_load_providers": "プロバイダーを読み込めませんでした。",
+      "external_adapter_disclosure": "外部アダプターは独自の権限を使用し、Crew MCP ツールなしで起動します。設定で事前承認されたツールは、Crew の承認と監査制御を回避する場合があります。",
+      "invalid_backend": "このプロバイダーはこのビルドでは選択できません。",
+      "backend_unavailable": "このプロバイダーはこのマシンで利用できません。",
+      "backend_unavailable_with_command": "このプロバイダーはこのマシンで利用できません。インストール: {{command}}",
+      "installed_restart_required": "このマシンにインストール済みですが、使用するにはゲートウェイの再起動が必要です。",
+      "missing_components": "このマシンにありません: {{components}}",
+      "missing_components_with_command": "このマシンにありません: {{components}}。インストール: {{command}}",
+      "claude_code": "Claude Code",
+      "codex": "Codex",
+      "kas_kiro_agent": "KAS (kiro-agent)",
+      "kiro_cli": "Kiro CLI",
+      "same_as_chat": "チャットと同じ"
     },
     "monacoCodeBlock": {
       "close_editor": "エディターを閉じる",
@@ -9597,25 +9614,6 @@
       "pod_homes_left_on_disk_with_no_live_pod": "稼働中の Pod がないままディスクに残る Pod ホーム"
     },
     "developer": {
-      "agentBackendTab": {
-        "agent_backend": "エージェントバックエンド",
-        "claude_code": "Claude Code",
-        "claude_uses_its_own_permissions": "Claude Code は通常、実行前に承認を求め、{{productName}} がその要求を審査します。しかし Claude 自身の設定（プロジェクト内の .claude/settings.json を含む）で事前承認されたツールは要求を出さないため、拒否ルールと監査ログはその呼び出しを認識しません。",
-        "could_not_load_the_agent_backend": "エージェントバックエンドを読み込めませんでした。",
-        "could_not_save_the_agent_backend": "エージェントバックエンドを保存できませんでした。",
-        "default_all_features_supported": "デフォルト。すべての機能に対応しています。",
-        "experimental": "実験的",
-        "install_check_failed": "このマシンにインストールされているか確認できませんでした。",
-        "installed_restart_required": "このマシンにインストール済みですが、使用するにはこの gateway を再起動する必要があります。",
-        "kas_kiro_agent": "KAS (kiro-agent)",
-        "kiro_cli": "Kiro CLI",
-        "loading_configuration": "設定を読み込んでいます…",
-        "missing_components": "このマシンにありません: {{components}}",
-        "missing_components_with_command": "このマシンにありません: {{components}}。次でインストールします: {{command}}",
-        "new_sessions_use_this_agent_a_session_that_is_al": "新しいセッションはこのエージェントを使用します。すでに開いているセッションは開始時のエージェントを維持し、ここで切り替えてもセッション中に変わることはありません。",
-        "retry": "再試行",
-        "set_is_fixed_at_gateway_start": "ここに表示されるエージェントは gateway の起動時に決まります。管理された環境ではポリシーで対象を制限できます。ポリシーの変更は次回の起動時に反映されます。"
-      },
       "featurePreviewsTab": {
         "crew": "Crew",
         "inbound_webhook_tokens_registered_contexts_and_r": "受信 Webhook のトークン、登録済みコンテキスト、実行履歴。API は動作しますが、ページは未完成です。",
@@ -9627,10 +9625,6 @@
     "developerPage": {
       "developer": "デベロッパー",
       "tabs": {
-        "agentBackend": {
-          "description": "新しいセッションが起動するエージェント — Kiro CLI、Claude Code、KAS",
-          "label": "エージェントバックエンド"
-        },
         "archive": {
           "description": "ローテーション/圧縮済みセッション履歴（7 日間保持）",
           "label": "アーカイブ"
@@ -11689,6 +11683,7 @@
         "failed_to_save_profile": "プロフィールを保存できませんでした",
         "failed_to_save_role_effort": "役割ごとの推論強度を保存できませんでした",
         "failed_to_save_role_model": "役割ごとのモデルを保存できませんでした",
+        "failed_to_save_provider": "プロバイダーを保存できませんでした",
         "failed_to_save_session_summaries": "セッション要約の設定を保存できませんでした",
         "failed_to_save_soft_stop_budget": "ソフトストップ予算を保存できませんでした",
         "failed_to_save_tips_preference": "ヒント設定を保存できませんでした",

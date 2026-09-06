@@ -21,6 +21,9 @@ _TO_DICT_KEYS = (
     "effective_agent",
     "model",
     "reasoning_effort",
+    # The slot's per-session harness pick, beside the model it constrains: a
+    # model id only means something inside one harness's namespace.
+    "acp_backend",
     "mode",
     "surface",
     "workspace",

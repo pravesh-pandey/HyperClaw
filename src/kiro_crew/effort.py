@@ -142,6 +142,7 @@ def resolve_effort_for_model(
     model: str | None,
     slot_overrides: dict[str, str] | None = None,
     defaults: object = None,
+    advertised_levels: list[str] | None = None,
 ) -> str | None:
     """Resolve the effort level for *model* using the priority chain.
 
@@ -149,12 +150,21 @@ def resolve_effort_for_model(
     Returns ``None`` when the model does not support effort or no level
     resolves (caller should then leave the provider on its own default).
     """
-    if not model_supports_effort(model):
+    # An ACP adapter may advertise a newly-added model family whose id is not
+    # in the local registry/heuristic yet. Its live selector is authoritative;
+    # callers pass those levels explicitly so the slider does not disappear
+    # merely because the catalog has not caught up.
+    dynamic_levels = set(advertised_levels or ())
+    if not model_supports_effort(model) and not dynamic_levels:
         return None
-    assert model is not None  # narrowed by model_supports_effort
+    if not model:
+        # A live selector without a resolved model cannot key a persisted
+        # override.  This is possible during an adapter's first handshake;
+        # wait for its current model rather than asserting on remote input.
+        return None
     if slot_overrides:
         lvl = slot_overrides.get(model)
-        if is_valid_effort(lvl):
+        if is_valid_effort(lvl) or lvl in dynamic_levels:
             return lvl
     coerced = _coerce_defaults(defaults)
     lvl = coerced.get(model)

@@ -1,8 +1,8 @@
 """Which ACP backends this build can serve — the one place that decides.
 
 The question this module owns is **capability**: can this build drive the harness
-at all? The public edition registers kiro-cli and KAS; an edition plugin adds its
-own from ``ProviderRegistry.register_acp_backends`` by calling
+at all? The public edition registers Kiro CLI, Claude Code, Codex, and KAS; an
+edition plugin adds its own from ``ProviderRegistry.register_acp_backends`` by calling
 :func:`register_selectable_backend`, the structural twin of
 ``publish_provider.register_provider``.
 
@@ -38,6 +38,8 @@ logger = logging.getLogger(__name__)
 # them from there; this module is only where they are DEFINED.
 
 ACP_BACKEND_CLAUDE = "claude"
+ACP_BACKEND_CODEX = "codex"
+ACP_BACKEND_OPENCODE = "opencode"
 ACP_BACKEND_KAS = "kas"
 # The kiro-cli backend is spelled as the empty string throughout, so name it
 # rather than leaving every call site to infer it from "not claude".
@@ -50,28 +52,79 @@ ACP_BACKENDS_KNOWN: FrozenSet[str] = frozenset(
     {
         ACP_BACKEND_KIRO,
         ACP_BACKEND_CLAUDE,
+        ACP_BACKEND_CODEX,
+        ACP_BACKEND_OPENCODE,
         ACP_BACKEND_KAS,
     }
 )
+
+# Capability sets are owned beside the backend vocabulary.  Keeping the
+# membership decisions here lets every consumer opt in explicitly without
+# defining a second harness identity outside this leaf module.
+ACP_BACKENDS_CONFIG_MODEL: FrozenSet[str] = frozenset(
+    {ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_OPENCODE}
+)
+#: Harnesses whose ADVERTISED model ids are exactly the ids their
+#: ``session/set_config_option`` accepts, so a membership test against the
+#: advertised set is a valid pre-wire entitlement check and the advertised
+#: catalog can be read straight out of the ``model`` config option.
+#:
+#: All three external adapters report their catalog there rather than in
+#: ``session/new``'s ``models`` block: ``claude-agent-acp`` sends no ``models``
+#: block at all, so reading only that one left its picker permanently empty.
+ACP_BACKENDS_CONFIG_MODEL_WIRE_IDS: FrozenSet[str] = frozenset(
+    {ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_OPENCODE}
+)
+ACP_BACKENDS_NUMERIC_PROTOCOL: FrozenSet[str] = frozenset(
+    {ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_OPENCODE}
+)
+ACP_BACKENDS_EXTERNAL_SESSION_STORE: FrozenSet[str] = frozenset(
+    {ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_OPENCODE}
+)
+ACP_BACKENDS_PROMPT_COMMANDS: FrozenSet[str] = frozenset(
+    {ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_OPENCODE}
+)
+
+#: Harnesses that own their model catalog and never read the installed Kiro
+#: agent JSON. For these the ``auto`` sentinel must reach the adapter intact:
+#: expanding it through ``_resolve_agent_model`` would pin a Kiro model id into
+#: a harness that cannot serve it — a ``kirocrew.json`` pinning a GPT id reached
+#: ``claude-agent-acp`` exactly that way and was refused with a ``-32603``.
+#: Membership is an explicit per-harness decision (harness-parity H5/H6), and
+#: every member also passes its model ids to the wire VERBATIM: the values these
+#: adapters advertise are the values they accept, so a translation through
+#: ``model_registry.to_provider_id`` would hand them an id from a namespace they
+#: reject.
+ACP_BACKENDS_OWN_MODEL_CATALOG: FrozenSet[str] = frozenset(
+    {ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_OPENCODE}
+)
+
+# External adapters that can receive Kiro Crew's managed MCP servers through
+# ACP's ``session/new`` request. Kiro CLI receives the same servers from its
+# rendered agent file. This is an explicit capability decision so a future
+# harness cannot inherit Crew's tools from the absence of another backend
+# (harness-parity H6).
+ACP_BACKENDS_CREW_MCP: FrozenSet[str] = frozenset({ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX})
 
 # ── The selectable registry ──
 
 #: What the public edition ships.
 #:
-#: ``ACP_BACKEND_CLAUDE`` is included because the public build can genuinely serve a
-#: session with it: ``acp/client.py`` owns the whole spawn path (the ``_is_claude``
-#: branch, ``_resolve_claude_acp_bin``, ``_resolve_claude_code_executable``) and the
-#: adapter it needs is a PUBLIC npm package (``CLAUDE_ACP_NPM_PKG``). Nothing about it
-#: is edition-private. An earlier revision left it out and described it as a "dormant
-#: seam ... not something a public build can serve a session with", which made the
-#: option render as permanently unavailable on exactly the builds that could run it —
-#: the switch was the only missing piece, not the harness.
+#: Claude Code and Codex are included because the public build owns both adapter
+#: spawn paths and each adapter is a public npm package. Nothing about these
+#: choices is edition-private.
 #:
 #: Whether it is USABLE on a given machine is a separate question with its own answer:
 #: :mod:`kiro_crew.agent_sdk.backend_install` probes for the two binaries and the
 #: dashboard reports what is absent plus the command that installs it.
 BASELINE_SELECTABLE_BACKENDS: FrozenSet[str] = frozenset(
-    {ACP_BACKEND_KIRO, ACP_BACKEND_CLAUDE, ACP_BACKEND_KAS}
+    {
+        ACP_BACKEND_KIRO,
+        ACP_BACKEND_CLAUDE,
+        ACP_BACKEND_CODEX,
+        ACP_BACKEND_OPENCODE,
+        ACP_BACKEND_KAS,
+    }
 )
 
 # ── Policy-facing spelling ──
@@ -88,6 +141,8 @@ POLICY_ID_BY_BACKEND: dict = {
     ACP_BACKEND_KIRO: POLICY_ID_KIRO,
     ACP_BACKEND_KAS: ACP_BACKEND_KAS,
     ACP_BACKEND_CLAUDE: ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_CODEX: ACP_BACKEND_CODEX,
+    ACP_BACKEND_OPENCODE: ACP_BACKEND_OPENCODE,
 }
 
 #: The backend a deployment policy may never deny.

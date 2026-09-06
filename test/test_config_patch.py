@@ -128,6 +128,81 @@ class TestRoleModels:
             assert resp.status == 400
 
 
+# ── Per-role harnesses (agent.role_backends.*) ────────────────────────────
+
+
+class TestRoleBackends:
+    @pytest.mark.asyncio
+    async def test_null_deletes_pin_and_clears_changed_role_model(self, tmp_config) -> None:
+        from kiro_crew.acp_backends import ACP_BACKEND_CODEX
+
+        data = _seed_config()
+        data["agent"].update(
+            {
+                "role_backends": {"subagent": ACP_BACKEND_CODEX},
+                "role_models": {"subagent": "codex-model"},
+            }
+        )
+        tmp_config.write_text(json.dumps(data), encoding="utf-8")
+        app, sessions = _make_app_with_sessions()
+        async with TestClient(TestServer(app)) as c:
+            resp = await _patch(c, "agent.role_backends.subagent", None)
+            assert resp.status == 200
+        written = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert "subagent" not in written["agent"]["role_backends"]
+        assert "subagent" not in written["agent"]["role_models"]
+        sessions.refresh_defaults.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_empty_is_explicit_kiro_pin(self, tmp_config) -> None:
+        app, sessions = _make_app_with_sessions()
+        async with TestClient(TestServer(app)) as c:
+            resp = await _patch(c, "agent.role_backends.subagent", "")
+            assert resp.status == 200
+        written = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert written["agent"]["role_backends"]["subagent"] == ""
+        sessions.refresh_defaults.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_same_effective_backend_keeps_role_model(self, tmp_config) -> None:
+        from kiro_crew.acp_backends import ACP_BACKEND_CODEX
+
+        data = _seed_config()
+        data["agent"].update(
+            {
+                "acp_backend": ACP_BACKEND_CODEX,
+                "role_backends": {"subagent": ACP_BACKEND_CODEX},
+                "role_models": {"subagent": "codex-model"},
+            }
+        )
+        tmp_config.write_text(json.dumps(data), encoding="utf-8")
+        app, _ = _make_app_with_sessions()
+        async with TestClient(TestServer(app)) as c:
+            resp = await _patch(c, "agent.role_backends.subagent", None)
+            assert resp.status == 200
+        written = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert written["agent"]["role_models"]["subagent"] == "codex-model"
+
+    @pytest.mark.asyncio
+    async def test_same_explicit_pin_keeps_role_model(self, tmp_config) -> None:
+        from kiro_crew.acp_backends import ACP_BACKEND_CODEX
+
+        data = _seed_config()
+        data["agent"].update(
+            {
+                "role_backends": {"subagent": ACP_BACKEND_CODEX},
+                "role_models": {"subagent": "codex-model"},
+            }
+        )
+        tmp_config.write_text(json.dumps(data), encoding="utf-8")
+        app, _ = _make_app_with_sessions()
+        async with TestClient(TestServer(app)) as c:
+            resp = await _patch(c, "agent.role_backends.subagent", ACP_BACKEND_CODEX)
+            assert resp.status == 200
+        written = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert written["agent"]["role_models"]["subagent"] == "codex-model"
+
+
 # ── General ──────────────────────────────────────────────────────────────
 
 

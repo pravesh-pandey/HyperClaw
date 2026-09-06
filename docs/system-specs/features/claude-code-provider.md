@@ -1,4 +1,4 @@
-# Claude Code provider — a selectable ACP harness
+# External code harnesses — selectable ACP adapters
 
 ## Public provider boundary
 
@@ -6,8 +6,9 @@
 `KiroCrewConfig.create_provider_factory()` constructs `AcpProvider`. Harness
 choice is a separate field, `agent.acp_backend`, and the public build now offers
 every harness it knows: `acp_backends.BASELINE_SELECTABLE_BACKENDS` contains
-`ACP_BACKEND_KIRO` (the empty string), `ACP_BACKEND_CLAUDE` and
-`ACP_BACKEND_KAS` — i.e. all of `ACP_BACKENDS_KNOWN`.
+`ACP_BACKEND_KIRO` (the empty string), `ACP_BACKEND_CLAUDE`,
+`ACP_BACKEND_CODEX`, and `ACP_BACKEND_KAS` — i.e. all of
+`ACP_BACKENDS_KNOWN`.
 `test_baseline_ships_every_known_backend` pins that equality.
 
 `DefaultProviderRegistry` therefore registers no extra backend: there is nothing
@@ -37,6 +38,38 @@ Whether a *deployment* may pick a registered harness is answered by the
 (`apply_selectable_denials`, floored at `GOVERNANCE_FLOOR_BACKEND` = kiro-cli).
 Whether a *machine* can run it is answered by `agent_sdk.probe_backend`.
 
+## The Codex harness
+
+Codex is adapted through the public `@agentclientprotocol/codex-acp` package and
+uses the same `AcpClient` lifecycle as Claude Code:
+
+- `ACP_BACKEND_CODEX` selects `codex-acp`; `_resolve_codex_acp_bin()` searches
+  the explicit `CODEX_AGENT_ACP_BIN`, the project/vendor install, mise, and the
+  augmented PATH. The resolver returns a Node argv for a JavaScript entry point,
+  so the adapter works in daemon environments whose shebang PATH is incomplete.
+- The adapter package carries its compatible Codex dependency. `CODEX_PATH` is
+  an optional adapter override; the backend probe therefore has one component,
+  `codex-acp`, and reports the same install command the spawn path uses.
+- Codex uses ACP protocol version `1`, skips Kiro's `session/set_mode`, and
+  changes models through `session/set_config_option` with `configId: "model"`.
+  Its `models.availableModels` payload can contain `model[effort]` display ids;
+  Crew exposes the base ids from the adapter's model config option so a picker
+  never sends a composite id back as a model selection.
+- Reasoning effort is a separate `reasoning_effort` config option. Crew maps its
+  provider-neutral `effort` control to that wire id, refreshes the advertised
+  levels after a model change, and applies only values the live session reports.
+  A cold Codex session exposes `Auto` until the adapter advertises concrete
+  models; no model id is guessed for an account whose entitlements are unknown.
+- Codex owns its session store and accepts the ACP `session/load` flow. It
+  receives Crew's always-emitted managed MCP servers through the same ACP
+  session parameters as Claude; pooled broker stubs remain independently
+  injectable when configured.
+
+Codex uses its own authentication and model entitlement state. The Crew backend
+probe checks whether the adapter can be launched, not whether the operator has
+completed Codex sign-in; an authentication failure is surfaced by the ACP session
+as a runtime error rather than misreported as a missing executable.
+
 ## The Claude harness
 
 `acp/client.py` owns the whole Claude spawn path, and it is a live path on a
@@ -57,6 +90,39 @@ plain public build:
 - The adapter is a **public** npm package, `CLAUDE_ACP_NPM_PKG =
   "@agentclientprotocol/claude-agent-acp"`. Nothing on this path is
   edition-private.
+
+### Models: the adapter owns its catalog
+
+Claude is a member of both `ACP_BACKENDS_CONFIG_MODEL_WIRE_IDS` and
+`ACP_BACKENDS_OWN_MODEL_CATALOG`, which settles three things that used to be
+answered differently for it than for Codex:
+
+- **The catalog is the `model` config option.** `claude-agent-acp` returns no
+  `models` block in `session/new` — its `configOptions` entry with `id: "model"`
+  carries both the offered values and the `currentValue` the session is running.
+  A picker fed from `models.availableModels` therefore showed nothing but
+  `Auto`, permanently, on a completely healthy session.
+- **Its ids are the wire values, and they travel verbatim.** The option offers
+  short aliases (`default`, `sonnet`, `opus`, `haiku`) alongside full ids
+  (`claude-fable-5-1[1m]`), and `session/set_config_option` accepts exactly
+  those. Translating through `model_registry.to_provider_id(…, "claude_code")`
+  produces `global.anthropic.claude-opus-4-8[1m]`, which the adapter refuses
+  with `-32603 Invalid value for config option model`. No call site between the
+  picker, `_wire_model_id`, `acp_effective_model`, the cron normalizer, and the
+  warm-pool post-claim switch translates an adapter model id. `auto` is likewise
+  not a value it accepts, so returning to the default needs a session reset.
+- **It never reads kiro-cli's agent spec.** `agent.model` defaults to `auto`, and
+  collapsing that sentinel through `_resolve_agent_model` reads
+  `~/.kiro/agents/kirocrew.json` — kiro-cli's file, holding whatever model the
+  operator runs *kiro-cli* on. A GPT pin there was handed to `claude-agent-acp`
+  on every cold start, which is where the reported `-32603` came from.
+
+Because the advertised ids and the wire ids are the same namespace,
+`model_is_unusable` is a valid pre-wire check here: an unservable pin is refused
+against the account's real catalog, and the error names the models it does have
+rather than surfacing a raw JSON-RPC fault. A refusal that still arrives from the
+adapter (entitlement unknown at send time) degrades to the harness default rather
+than ending the session.
 
 Availability is therefore a property of the operator's machine, not of the build:
 Claude Code needs **two** locally-installed binaries, the `claude-agent-acp`
@@ -81,7 +147,7 @@ Both operator-facing surfaces read that one verdict:
   `keeps the selected backend visible even if it reads as unselectable` and
   `saves the Claude Code selection the shipped build offers`.
 
-### What Crew gates on this harness, and what a pre-approval skips
+### What Crew gates on this harness
 
 Start from what is NOT broken, because the difference is narrow and easy to overstate.
 
@@ -93,52 +159,35 @@ arrives as a `permission_request` event and runs Crew's own approval path:
 checks, and its SEL decision record. A Claude session is governed like any other on
 that path.
 
-**What escapes is a call that was already pre-approved, because it never asks.** The
-SDK evaluates permissions in a fixed order and `allow` rules sit at step 5, ahead of
-the callback at step 6. Anthropic's documentation states the consequence in bold:
-*"Auto-approved tools never reach `canUseTool`."* No callback means no ACP request,
-so for that specific call there is nothing for Crew to gate or record. The same holds
-for `bypassPermissions` and for `acceptEdits` on the operations it covers.
+**Managed Crew calls are forced through that path.** The ACP session metadata sets
+`settingSources: []`, so project and user `.claude/settings.json` files cannot inject
+pre-approved rules. It also disables Claude's native `Agent` and `Task` tools and
+adds scoped `permissions.ask` rules for every managed Crew MCP name. The adapter
+therefore asks ACP before a Crew MCP call, even when the cloned project carries its
+own Claude settings. The external-adapter regression tests pin these options because
+they are part of Crew's security boundary.
 
-**Why that matters here rather than being purely the operator's own choice.** Those
-rules do not have to come from the operator. The SDK reads `.claude/settings.json`
-from the **project directory** — the `project` setting source is enabled for default
-options — so a cloned repository can carry allow rules its author wrote. Crew's public
-core passes nothing that would change this: no permission mode
-(`AcpClient._permission_mode` is stored and never read), no `settingSources`
-restriction, no `PreToolUse` hook, and no settings seed.
+Other Claude-native tools still use the adapter's normal permission flow. Kiro CLI and
+KAS remain governed by their own harness controls and do not read Claude settings.
 
-This is documented, intended Claude Code behaviour, not a defect introduced by making
-the harness selectable — the harness was already implemented and reachable by any
-edition that registered it. But it means the guarantee differs per harness, so the
-dashboard states the difference on the Claude row
-(`claude_uses_its_own_permissions`) rather than leaving an operator to discover it
-from a shell command that never asked. Kiro CLI and KAS have no equivalent
-settings file that can pre-approve past Crew's gate, and deliberately carry no such
-line.
 
-Anthropic documents two mechanisms that would close even the pre-approved case — a
-`PreToolUse` hook, which runs before every other step and whose deny holds even in
-`bypassPermissions` mode, and excluding `project` from `settingSources`, which stops
-the untrusted copy being read at all. Whether `claude-agent-acp` forwards either over
-ACP is not answered in this repository, and is the prerequisite for Crew gating
-*every* Claude tool call rather than every call Claude asks about.
+### Crew MCP tools in external adapter sessions
 
-### Known gap: a Claude session has no Crew MCP tools
+The external adapters do not read `kirocrew.json` on their own. Kiro CLI still
+receives managed servers from its rendered agent file; Claude and Codex receive
+the always-emitted `kirocrew-core` and `kirocrew-cron` entries explicitly in both
+the `session/new` and `session/load` ACP requests. The entries are built from
+the same managed-server registry and emission gates as the Kiro spec, with no
+`autoApprove` metadata. User-configured MCP servers remain an edition seam and
+are not copied into an external adapter session.
 
-`AcpClient._claude_session_mcp_servers()` is an overridable seam that **defaults
-to returning `[]`**, and the `claude-agent-acp` adapter does not read
-`kirocrew.mcp.json` on its own. On a build that does not override that method — the
-public core does not — a Claude session starts with **zero MCP tools**. The
-harness itself works: prompts, streaming, model and effort selection, and the
-full `session/request_permission` flow. What is absent is Crew's own tooling,
-`kirocrew-core`, cron, and every user-configured MCP server.
-
-The default is byte-identical for kiro-cli, which receives its servers via
-`--agent` and is unaffected. Both call sites carry the gap —
-`_new_session_following_substitution` (`session/new`) and the `session/load`
-branch — so closing it for the public build means translating
-`kirocrew.mcp.json` into that array in one place.
+Claude sessions also set `settingSources: []`, disable the native `Agent` and
+`Task` tools, and install scoped `ask` rules for every managed Crew MCP tool.
+This keeps a project `.claude/settings.json` from pre-approving Crew calls and
+ensures `spawn_run` reaches ACP's permission request before the MCP server
+executes it. The ACP child inherits the session key already used by Crew's MCP
+identity resolver, so `spawn_run` resolves the originating chat and applies
+`agent.role_backends.subagent` and `agent.role_models.subagent`.
 
 ### Companion-owned glue stays out of the core
 

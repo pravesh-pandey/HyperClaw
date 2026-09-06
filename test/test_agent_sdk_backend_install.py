@@ -26,12 +26,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from unittest.mock import MagicMock
 
 import pytest
 
 from kiro_crew.acp_backends import (
     ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_CODEX,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_KNOWN,
@@ -58,6 +60,8 @@ def _stub_resolvers(
     kiro="/usr/local/bin/kiro-cli",
     adapter=(["node", "/n/acp.js"], "/usr/bin"),
     claude_cli="/usr/local/bin/claude",
+    codex_adapter=(["node", "/n/codex-acp.js"], "/usr/bin"),
+    opencode=("/bin/opencode", "/bin"),
 ):
     """Patch the three spawn resolvers on the module the driver imports from.
 
@@ -71,6 +75,8 @@ def _stub_resolvers(
     monkeypatch.setattr(client, "_resolve_kiro_bin", lambda **_kw: kiro)
     monkeypatch.setattr(client, "_resolve_claude_acp_bin", lambda: adapter)
     monkeypatch.setattr(client, "_resolve_claude_code_executable", lambda: claude_cli)
+    monkeypatch.setattr(client, "_resolve_codex_acp_bin", lambda: codex_adapter)
+    monkeypatch.setattr(client, "_resolve_opencode_bin", lambda: opencode)
 
 
 # ── Per-backend verdicts ──
@@ -94,6 +100,13 @@ class TestInstalledVerdicts:
         # No remedy to offer for a working backend -- an install command beside
         # an "installed" row would read as an action still outstanding.
         assert state.install_command == ""
+
+    def test_codex_installed_when_the_adapter_resolves(self, monkeypatch):
+        _stub_resolvers(monkeypatch)
+        state = probe.probe_backend(ACP_BACKEND_CODEX)
+        assert state.installed == probe.INSTALLED
+        assert state.missing_components == ()
+        assert state.policy_id == "codex"
 
 
 class TestMissingVerdicts:
@@ -151,6 +164,15 @@ class TestMissingVerdicts:
         _stub_resolvers(monkeypatch, adapter=(None, "/usr/bin"))
         state = probe.probe_backend(ACP_BACKEND_CLAUDE)
         assert state.install_command == f"npm i -g {CLAUDE_ACP_NPM_PKG}"
+
+    def test_codex_missing_names_its_public_adapter_package(self, monkeypatch):
+        from kiro_crew.acp.client import CODEX_ACP_NPM_PKG
+
+        _stub_resolvers(monkeypatch, codex_adapter=(None, "/usr/bin"))
+        state = probe.probe_backend(ACP_BACKEND_CODEX)
+        assert state.installed == probe.MISSING
+        assert state.missing_components == (probe.COMPONENT_CODEX_ACP_ADAPTER,)
+        assert state.install_command == f"npm i -g {CODEX_ACP_NPM_PKG}"
 
 
 class TestKasTracksKiro:
@@ -220,6 +242,18 @@ class TestUnknownIsNeverMissing:
         assert state.installed == probe.UNKNOWN
         assert state.missing_components == ()
         assert state.install_command == ""
+
+    def test_a_raising_codex_resolver_yields_unknown(self, monkeypatch):
+        _stub_resolvers(monkeypatch)
+        from kiro_crew.acp import client
+
+        def _boom():
+            raise RuntimeError("resolver failed")
+
+        monkeypatch.setattr(client, "_resolve_codex_acp_bin", _boom)
+        state = probe.probe_backend(ACP_BACKEND_CODEX)
+        assert state.installed == probe.UNKNOWN
+        assert state.missing_components == ()
 
     def test_an_id_with_no_probe_is_unknown_rather_than_missing(self):
         """A plugin-registered backend this module has never heard of.
@@ -301,6 +335,7 @@ class TestProbeCache:
         )
         monkeypatch.setattr(client, "_resolve_claude_acp_bin", lambda: (None, "/usr/bin"))
         monkeypatch.setattr(client, "_resolve_claude_code_executable", lambda: None)
+        monkeypatch.setattr(client, "_resolve_codex_acp_bin", lambda: (None, "/usr/bin"))
         probe.probe_backends()
         assert calls == ["kiro"]
 
@@ -398,9 +433,9 @@ class TestProbeBackendsCoverage:
         assert {s.backend for s in states} == set(ACP_BACKENDS_KNOWN)
         policy_ids = [s.policy_id for s in states]
         assert policy_ids == sorted(policy_ids)
-        # claude is absent from the public build's selectable set, and still
-        # present here -- the switch has to be able to explain it, not hide it.
+        # Adapter-backed rows stay independently identifiable in the payload.
         assert "claude" in policy_ids
+        assert "codex" in policy_ids
 
 
 # ── The endpoint ──
@@ -477,7 +512,7 @@ class TestEndpointPayloadShape:
         assert response.status == 200
 
         rows = json.loads(response.text or "{}")["backends"]
-        assert [r["policy_id"] for r in rows] == ["claude", "kas", "kiro"]
+        assert [r["policy_id"] for r in rows] == ["claude", "codex", "kas", "kiro", "opencode"]
         for row in rows:
             assert set(row) == {
                 "id",
@@ -556,24 +591,23 @@ class TestRouteIsRegistered:
 def test_the_probe_is_offloaded_off_the_event_loop(monkeypatch):
     """The Claude probe spawns mise, so running it inline would stall every tab.
 
-    Asserted structurally -- the handler must reach the snapshot through
-    ``asyncio.to_thread`` -- because a wall-clock assertion on a blocking call
-    is a stopwatch reading, not a statement about the code.
+    Assert the thread identity where discovery runs, independent of which
+    offload wrapper the handler uses.
     """
     from kiro_crew.dashboard.handlers import acp_backend_status as handler
 
-    seen: list[object] = []
-    real_to_thread = asyncio.to_thread
+    seen: list[int] = []
+    loop_thread = threading.get_ident()
 
-    async def _spy(fn, /, *args, **kwargs):
-        seen.append(fn)
-        return await real_to_thread(fn, *args, **kwargs)
+    def _snapshot():
+        seen.append(threading.get_ident())
+        return []
 
-    monkeypatch.setattr(handler.asyncio, "to_thread", _spy)
-    monkeypatch.setattr(handler, "_snapshot", lambda: [])
+    monkeypatch.setattr(handler, "_snapshot", _snapshot)
 
     asyncio.run(handler.api_acp_backend_status(_request()))
-    assert handler._snapshot in seen
+    assert len(seen) == 1
+    assert seen[0] != loop_thread
 
 
 def test_the_boot_path_does_not_import_acp_at_module_scope():

@@ -17,9 +17,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from kiro_crew import model_registry
+from kiro_crew.acp_backends import ACP_BACKENDS_OWN_MODEL_CATALOG
 from kiro_crew.agent import _prompt_path
 from kiro_crew.agent_discovery import agent_skill_globs
-from kiro_crew.agent_sdk.provider_identity import is_claude_code
+from kiro_crew.agent_sdk.backend_identity import is_claude_backend_name
+from kiro_crew.agent_sdk.provider_identity import PROVIDER_CLAUDE_CODE, is_claude_code
 from kiro_crew.config.loader import KiroCrewConfig, workspace_dir_for
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.cron import get_local_tz
@@ -1682,14 +1684,41 @@ def build_session_replay(
     return replay.translate(_MULTIBYTE_TABLE)
 
 
-def _skills_injection_plan(agent: str | None, *, is_cc: bool) -> tuple[bool, list[str]]:
+def _adapter_display_names(provider_type: str) -> tuple[str, str]:
+    """``(command-form, title-form)`` for the harness serving this session.
+
+    Names each adapted harness for the model when the shared Kiro Crew persona
+    prompt is rebranded for it. A table rather than a transform of the provider
+    label: ``"opencode".capitalize()`` is "Opencode", which is not what that
+    product is called, and the model repeats back whatever it is told here. The
+    command form replaces ``kiro-cli``, the title form replaces ``Kiro``. An
+    unlisted label falls back to itself, so a newly adapted harness reads
+    awkwardly rather than claiming to be Kiro.
+
+    The label vocabulary lives in ``acp.types``, whose package ``__init__``
+    imports the ACP client and runtime, so it is reached at CALL time — this
+    module is on the context-build path and must not drag the transport layer
+    into its import graph.
+    """
+    from kiro_crew.acp.types import PROVIDER_LABEL_CODEX, PROVIDER_LABEL_OPENCODE
+
+    return {
+        PROVIDER_CLAUDE_CODE: ("claude code", "Claude"),
+        PROVIDER_LABEL_CODEX: ("codex", "Codex"),
+        PROVIDER_LABEL_OPENCODE: ("opencode", "OpenCode"),
+    }.get(provider_type, (provider_type, provider_type))
+
+
+def _skills_injection_plan(
+    agent: str | None, *, is_external_adapter: bool
+) -> tuple[bool, list[str]]:
     """Whether to inject skills for *agent*, plus the glob restriction to apply.
 
     THE single source of truth for the agent-scoping rule, shared by the
     session-start injection and the post-compaction re-injection. Mapped agents
-    (a ``skill://`` resource in their agent JSON) are Claude-Code-only, since
-    kiro loads those natively; an unmapped agent gets skills only when it is the
-    default one.
+    (a ``skill://`` resource in their agent JSON) are injected for external
+    adapters, since they do not load Kiro agent resources natively; an unmapped
+    agent gets skills only when it is the default one.
 
     Deliberately one function rather than the same expression written twice: a
     hand-copied second gate is exactly what let the re-injection path ship
@@ -1697,7 +1726,7 @@ def _skills_injection_plan(agent: str | None, *, is_cc: bool) -> tuple[bool, lis
     """
     globs = agent_skill_globs(agent) if agent else []
     is_custom = bool(agent) and agent != "kirocrew"
-    return (is_cc if globs else not is_custom), globs
+    return (is_external_adapter if globs else not is_custom), globs
 
 
 def _emit_context_section_timings(
@@ -1824,7 +1853,15 @@ class ContextBuilder:
             # The joined spelling is the {bot_name} value the prompt
             # substitutes, not prose about the product: respelling it would
             # change what the model is told to answer to.
-            self._bot_name = "KiroCrew" if is_claude_code(provider) else "Kiro"  # brand-ok
+            self._bot_name = (
+                "KiroCrew"  # brand-ok: prompt identity token preserves legacy spelling
+                if (
+                    is_claude_code(provider)
+                    or is_claude_backend_name(cfg.agent.acp_backend)
+                    or cfg.agent.acp_backend in ACP_BACKENDS_OWN_MODEL_CATALOG
+                )
+                else "Kiro"
+            )  # brand-ok
         # Register default memory in the workspace cache
         _memory_stores["default"] = self.memory
 
@@ -2127,7 +2164,7 @@ class ContextBuilder:
         deployment's effective window), leaving that path byte-for-byte
         unchanged.
 
-        All providers — including Claude Code — receive the
+        All providers — including external adapters — receive the
         same injected context (critical rules, thread history, memory, skills,
         lessons); steering files are the one exception (see below). This keeps
         Claude Code at parity with kiro so dashboard/Slack UI contracts (diff
@@ -2135,13 +2172,14 @@ class ContextBuilder:
         behave identically across providers.
 
         *provider_type* is consumed again for the steering gate only: the
-        steering block below is injected solely on the CC backend
-        (``is_claude_code(provider_type)``). kiro-cli loads an agent's
+        steering block below is injected on external adapters
+        (``is_claude_code(provider_type)`` or the Codex backend). kiro-cli loads an
+        agent's
         ``resources`` natively when spawned with ``--agent`` (acp/client.py
         ``_spawn``), so re-injecting steering on the ACP/kiro backend would
-        duplicate what kiro already loaded; the CC backend (claude-agent-acp)
-        does NOT read agent ``resources`` and still needs the explicit load.
-        Everything else stays at CC/ACP parity.
+        duplicate what kiro already loaded; external adapters do NOT read agent
+        ``resources`` and still need the explicit load. Everything else stays
+        at adapter/ACP parity.
 
         *context_groups* selects which switchable groups are injected (see
         ``SWITCHABLE_CONTEXT_GROUPS``). ``None`` — every caller except a
@@ -2161,6 +2199,7 @@ class ContextBuilder:
         """
         is_custom = agent and agent != "kirocrew"
         is_cc = is_claude_code(provider_type)
+        is_external_adapter = is_cc or provider_type in ACP_BACKENDS_OWN_MODEL_CATALOG
         caps = _resolve_caps(model_window)
         parts: list[str] = []
 
@@ -2321,11 +2360,14 @@ class ContextBuilder:
         # Steering files from agent config resources.
         # kiro-cli loads an agent's ``resources`` natively when spawned with
         # ``--agent`` (see acp/client.py ``_spawn``) — the same mechanism that
-        # lets us skip this for custom agents above. The CC backend
-        # (claude-agent-acp) does NOT read agent ``resources``, so only it needs
-        # the explicit load. Injecting on the ACP/kiro backend would duplicate
-        # what kiro-cli already loaded.
-        if not is_custom and is_cc and _group_included(context_groups, CONTEXT_GROUP_PROJECT):
+        # lets us skip this for custom agents above. External adapters do NOT
+        # read agent ``resources``, so they need the explicit load. Injecting on
+        # the ACP/kiro backend would duplicate what kiro-cli already loaded.
+        if (
+            not is_custom
+            and is_external_adapter
+            and _group_included(context_groups, CONTEXT_GROUP_PROJECT)
+        ):
             steering_ctx = _load_steering_resources()
             if steering_ctx:
                 if lazy_skills and len(steering_ctx) > caps.steering:
@@ -2464,10 +2506,9 @@ class ContextBuilder:
         # 1. The agent template maps skills via ``skill://`` resources. On the
         #    ACP/kiro backend kiro-cli loads those SKILL.md files ITSELF when
         #    spawned with ``--agent`` (acp/client.py ``_spawn``), so injecting
-        #    them again here would duplicate every mapped skill's content —
-        #    exactly the reason the steering block below is CC-only. On the CC
-        #    backend (claude-agent-acp) nothing reads agent ``resources``, so
-        #    KiroCrew injects the mapped set itself, scoped by ``only=``.
+        #    them again here would duplicate every mapped skill's content.
+        #    External adapters do not read agent ``resources``, so Kiro Crew
+        #    injects the mapped set itself, scoped by ``only=``.
         # 2. No mapping + the kirocrew agent -> the whole catalog (unchanged).
         # 3. No mapping + a custom agent -> nothing (unchanged; the agent is
         #    expected to bring its own via kiro-cli).
@@ -2476,9 +2517,12 @@ class ContextBuilder:
         # on-demand skills (plus always:true pinned) and leave the tail to
         # skill_search, keeping the block bounded instead of dumping every
         # skill's summary. The slice below is a defensive backstop only.
-        # Mapped: CC only (kiro loads them natively). Unmapped: kirocrew only.
+        # Mapped: external adapters only (kiro loads them natively). Unmapped:
+        # kirocrew only.
         # Shared with the post-compaction re-injection in build_message.
-        inject_skills, skill_globs = _skills_injection_plan(agent, is_cc=is_cc)
+        inject_skills, skill_globs = _skills_injection_plan(
+            agent, is_external_adapter=is_external_adapter
+        )
         if inject_skills:
             # ON: usage-ranked top-K bounded by the skills section cap.
             # OFF (budget=None): legacy full skills dump, unchanged behavior.
@@ -2674,23 +2718,26 @@ class ContextBuilder:
         _user_bounds: tuple[int, int] | None = None
         _user_part_index: int | None = None
         is_cc = is_claude_code(provider_type)
+        is_external_adapter = is_cc or provider_type in ACP_BACKENDS_OWN_MODEL_CATALOG
 
         # Session context on first message only
         if is_new_session:
             # Agent prompt goes BEFORE session context wrapper
             # so the LLM treats it as its identity, not background info.
-            if is_cc:
-                # CC gets the SAME KiroCrew persona prompt as kiro — including
+            if is_external_adapter:
+                # External adapters get the SAME Kiro Crew persona prompt as kiro — including
                 # the Output Format rules (diff blocks, image embeds, OPTIONS)
                 # which are dashboard UI contracts, not kiro-specific. Only the
-                # kiro-cli *branding* references are rewritten to claude code.
+                # kiro-cli *branding* references are rewritten to the selected
+                # adapter name.
                 try:
                     pp = _prompt_path(mode=mode)
                     agent_prompt = pp.read_text(encoding="utf-8")
-                    # Replace kiro-cli references with claude code equivalents
-                    agent_prompt = agent_prompt.replace("kiro-cli", "claude code")
-                    agent_prompt = re.sub(r"\bKiro\b", "Claude", agent_prompt)
-                    agent_prompt = re.sub(r"\bkiro\b", "claude", agent_prompt)
+                    adapter_name, title_name = _adapter_display_names(provider_type)
+                    # Replace kiro-cli references with the selected adapter.
+                    agent_prompt = agent_prompt.replace("kiro-cli", adapter_name)
+                    agent_prompt = re.sub(r"\bKiro\b", title_name, agent_prompt)
+                    agent_prompt = re.sub(r"\bkiro\b", adapter_name.split()[0], agent_prompt)
                     agent_prompt = agent_prompt.strip()
                 except Exception:
                     agent_prompt = ""
@@ -2811,7 +2858,7 @@ class ContextBuilder:
         # mapping excludes and an unmapped custom agent cannot receive a block
         # its session-start context never contained.
         if not is_new_session and needs_reinjection:
-            _inject, _globs = _skills_injection_plan(agent, is_cc=is_cc)
+            _inject, _globs = _skills_injection_plan(agent, is_external_adapter=is_external_adapter)
             if _inject:
                 _cfg = KiroCrewConfig.load()
                 lazy_skills = bool(getattr(_cfg.skills, "lazy_load", False))

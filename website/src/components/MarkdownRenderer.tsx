@@ -3158,11 +3158,21 @@ const MCWIDGET_STRIP_RE = /<mcwidget[\s\S]*?<\/mcwidget>|<mcwidget[\s\S]*$/g
 // (mid-stream).
 const TOOL_USE_STRIP_RE = /<tool_use[\s\S]*?<\/tool_use>|<tool_use[\s\S]*$/g
 
+// DeepSeek-style adapters use DSML control tokens for function calls. If an
+// adapter fails to consume the token stream completely, those delimiters can
+// arrive as ordinary assistant text. Remove the complete function-call envelope
+// and any orphaned/incomplete tags so protocol syntax never becomes chat prose.
+// The unclosed alternatives are intentional: streaming can expose a prefix of a
+// token before its closing delimiter arrives. As with tool-use markup, inline
+// code mentions are protected by stripStrayTags' source mask.
+const DSML_STRIP_RE =
+  /<｜DSML｜function_calls>[\s\S]*?<｜DSML｜\/function_calls>|<｜DSML｜function_calls>(?:(?!<｜DSML｜\/function_calls>)[\s\S])*$|<｜DSML｜(?:function_calls|invoke|parameter)[\s\S]*$|<｜DSML｜\/?(?:function_calls|invoke|parameter)(?:\s+[^>]*)?>/g
+
 /**
- * Strip stray protocol tags (`<mcwidget>`, `<tool_use>`) that leak through to
- * a markdown block during streaming transitions, while preserving any tag
- * mentions that appear inside inline-code spans (e.g. when the agent is
- * documenting the syntax).
+ * Strip stray protocol tags (`<mcwidget>`, `<tool_use>`, DSML function-call
+ * tokens) that leak through to a markdown block during streaming transitions,
+ * while preserving any tag mentions that appear inside inline-code spans (e.g.
+ * when the agent is documenting the syntax).
  *
  * Builds a per-line inline-code mask, runs the strip regex against the masked
  * text to find ranges, then splices those ranges out of the original content.
@@ -3196,6 +3206,7 @@ function stripStrayTags(content: string, openMarker: string, stripRe: RegExp): s
 
 const stripStrayWidgetTags = (content: string) => stripStrayTags(content, '<mcwidget', MCWIDGET_STRIP_RE)
 const stripStrayToolUseTags = (content: string) => stripStrayTags(content, '<tool_use', TOOL_USE_STRIP_RE)
+const stripStrayDsmlTags = (content: string) => stripStrayTags(content, '<｜DSML｜', DSML_STRIP_RE)
 
 // A GFM table delimiter row, e.g. `| --- | :--: |` or `---|---`. remark-gfm
 // only promotes the preceding header line to a <table> once this row is present.
@@ -3258,10 +3269,9 @@ const MarkdownBlock = memo(function MarkdownBlock({ content, sourcePos, startLin
     () => ({ enabled: !!unfurl && !sourcePos, live: !!live }),
     [unfurl, sourcePos, live],
   )
-  // Strip any <mcwidget> or <tool_use> tags that leak through during
-  // streaming transitions or when the agent emits protocol markup as text.
-  // Both passes preserve mentions inside inline-code spans.
-  let clean = stripStrayToolUseTags(stripStrayWidgetTags(content))
+  // Strip protocol markup that leaks through during streaming transitions or
+  // when the agent emits it as text. All passes preserve inline-code mentions.
+  let clean = stripStrayDsmlTags(stripStrayToolUseTags(stripStrayWidgetTags(content)))
   // `glow` marks the live streaming tail block: while streaming, hold back an
   // incomplete trailing table so it doesn't paint as pipe text then snap into a
   // <table> when the delimiter row arrives.

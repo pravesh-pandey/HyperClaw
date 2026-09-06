@@ -600,6 +600,41 @@ def _subagent_default_effort() -> str:
         return ""
 
 
+def _subagent_default_backend(parent_backend: str | None = None) -> str | None:
+    """The ACP harness sub-agents run on, or ``None`` to inherit.
+
+    ``None`` — not ``""`` — is the "no opinion" answer, because ``""`` is
+    kiro-cli's real wire id and would pin every sub-agent to kiro. Returns a
+    concrete harness only when the effective role pin differs from the factory's
+    configured chat harness; otherwise the caller omits the kwarg and the factory
+    inherits, exactly as before this pin existed. When the parent chat slot has a
+    per-session harness override, ``parent_backend`` supplies the actual parent
+    harness so an unpinned role inherits that session rather than the global chat
+    default. Never raises.
+    """
+    try:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        agent_cfg = KiroCrewConfig.load().agent
+        if "subagent" in agent_cfg.role_backends:
+            effective = agent_cfg.role_backends["subagent"]
+        elif isinstance(parent_backend, str):
+            effective = parent_backend
+        else:
+            effective = agent_cfg.acp_backend
+        # What the factory falls back to when the kwarg is OMITTED, which is the
+        # only thing ``None`` can mean: ``subagent_manager.run`` passes
+        # ``acp_backend_override`` solely when this answers non-None, and the
+        # factory then reads ``agent.acp_backend``. It never learns the parent
+        # slot's per-session pick, so comparing against the parent here would
+        # answer ``None`` for a slot that moved off the global default and spawn
+        # the sub-agent on a harness its parent is not running.
+        inherited = agent_cfg.acp_backend
+        return effective if effective != inherited else None
+    except Exception:
+        return None
+
+
 def _spawn_effective_model(model: str, agent: str) -> str:
     """The model the provider factory's effort gate will actually see, or ``""``.
 

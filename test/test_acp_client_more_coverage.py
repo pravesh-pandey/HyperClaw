@@ -25,6 +25,7 @@ from kiro_crew.acp.client import (
     AcpAuthRequired,
     AcpClient,
     AcpError,
+    AcpModelUnavailable,
     AcpProcessDied,
     AcpTimeoutError,
     OversizeLineUnrecoverable,
@@ -470,17 +471,39 @@ class TestModelAndConfigGuards:
         client = _client(tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
         client._session_id = "sid"
         client.set_config_option = AsyncMock()
-        # Claude ids live in a different namespace than the advertised list, so
-        # the entitlement pre-check must NOT run on this backend.
-        client._available_models = [{"modelId": "claude-opus-4-8"}]
+        # The catalog claude-agent-acp actually advertises: its ``model`` config
+        # option, whose values are exactly what ``set_config_option`` accepts.
+        client._acp_config_options = [
+            {"id": "model", "options": [{"value": "sonnet"}, {"value": "opus"}]}
+        ]
 
-        await client.set_model("global.anthropic.claude-sonnet-4-6")
+        await client.set_model("sonnet")
 
-        client.set_config_option.assert_awaited_once_with(
-            "model", "global.anthropic.claude-sonnet-4-6"
-        )
-        assert client._model == "global.anthropic.claude-sonnet-4-6"
-        assert client._resolved_model_id == "global.anthropic.claude-sonnet-4-6"
+        client.set_config_option.assert_awaited_once_with("model", "sonnet")
+        # Verbatim on the wire: a registry translation would send
+        # ``global.anthropic.claude-sonnet-4-6[1m]``, which the adapter refuses.
+        assert client._model == "sonnet"
+        assert client._resolved_model_id == "sonnet"
+
+    @pytest.mark.asyncio
+    async def test_claude_set_model_refuses_an_id_outside_the_advertised_catalog(self, tmp_path):
+        """An EXPLICIT pick is never silently swapped — it raises and names the set.
+
+        Valid here because the advertised ids and the wire ids are one namespace
+        for this harness: the ``model`` config option is both.
+        """
+        client = _client(tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
+        client._session_id = "sid"
+        client.set_config_option = AsyncMock()
+        client._acp_config_options = [
+            {"id": "model", "options": [{"value": "sonnet"}, {"value": "opus"}]}
+        ]
+
+        with pytest.raises(AcpModelUnavailable) as excinfo:
+            await client.set_model("global.anthropic.claude-sonnet-4-6")
+
+        client.set_config_option.assert_not_awaited()
+        assert "opus" in str(excinfo.value)
 
     def test_capture_available_models_tolerates_odd_payloads(self, tmp_path):
         client = _client(tmp_path)

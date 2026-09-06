@@ -447,6 +447,11 @@ class TestEffortControl:
         provider._client.set_config_option = AsyncMock()
         # Default: the session advertises an 'effort' option (modern adapter).
         provider._client.supports_config_option = MagicMock(return_value=True)
+        # Mirror AcpClient.current_model_id: with no config options reported,
+        # it answers the configured model. Leaving the MagicMock default here
+        # would hand ``_effort_model`` a mock object as an effort-map KEY, so
+        # the double would pass while the real client keyed on a string.
+        provider._client.current_model_id = MagicMock(side_effect=lambda: provider._client._model)
         return provider
 
     @pytest.mark.asyncio

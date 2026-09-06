@@ -17,8 +17,17 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew import agent_state, model_registry
-from kiro_crew.acp.client import advertised_model_ids, model_is_unusable
-from kiro_crew.acp_backends import selectable_backend_values
+from kiro_crew.acp.client import AcpError, advertised_model_ids, model_is_unusable
+from kiro_crew.acp_backends import (
+    ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_CODEX,
+    ACP_BACKEND_KIRO,
+    ACP_BACKEND_OPENCODE,
+    ACP_BACKENDS_CONFIG_MODEL,
+    ACP_BACKENDS_OWN_MODEL_CATALOG,
+    ACP_BACKENDS_PROMPT_COMMANDS,
+    selectable_backend_values,
+)
 from kiro_crew.agent import (
     AGENT_FILENAME,
     _spec_path_is_safe,
@@ -50,6 +59,7 @@ from kiro_crew.config.loader import (
     KiroCrewAgentConfig,
     KiroCrewConfig,
     _safe_color,
+    default_project_dir,
     inject_kiro_cli_api_key,
     normalize_agent_model,
     read_config_for_update,
@@ -1731,13 +1741,20 @@ def _normalize_model_key(name: str) -> str:
 def _advertised_cc_models(request: web.Request) -> list[dict]:
     """Map the first active CC provider's advertised models to the API shape.
 
-    claude-agent-acp captures its real versioned list at session init (see
-    AcpClient._capture_available_models). Backend provider ids are mapped back to
-    canonical registry keys (``from_provider_id``) so they dedup cleanly against
-    the registry rows in :func:`_cc_models` and the wire value stays canonical.
-    A provider id with no registry entry passes through unchanged (forward-compat
-    for models the registry doesn't list yet). Returns ``[]`` when no session has
-    initialized or the backend advertised nothing.
+    The Claude adapter reports its catalog through the ``model`` config option,
+    which ``AcpClient.available_models`` surfaces (``session/new`` carries no
+    ``models`` block, so reading only that left this list permanently empty and
+    the picker showing nothing but "Auto").
+
+    Model ids are preserved VERBATIM rather than folded to canonical registry
+    keys: the adapter accepts exactly what it advertised, so ``opus`` must reach
+    the wire as ``opus``. Translating it to ``opus-4.8-1m`` (or on to
+    ``global.anthropic.claude-opus-4-8[1m]``) produces an id the adapter refuses
+    with a ``-32603``. :func:`_cc_models` still folds these ids through
+    ``_normalize_model_key`` for DEDUP and display metadata only.
+
+    Returns ``[]`` when no session has initialized or the backend advertised
+    nothing.
     """
     try:
         state: DashboardState = request.app["state"]
@@ -1745,6 +1762,15 @@ def _advertised_cc_models(request: web.Request) -> list[dict]:
     except (KeyError, AttributeError):
         return []
     for provider in providers:
+        client = getattr(provider, "client", None)
+        backend = getattr(client, "backend", None)
+        # Real ACP providers always expose a string backend. Legacy/focused
+        # test doubles may not, so an unknown shape remains fail-open.
+        if isinstance(backend, str):
+            if backend == ACP_BACKEND_CLAUDE:
+                pass
+            else:
+                continue
         getter = getattr(provider, "available_models", None)
         if not callable(getter):
             continue
@@ -1755,9 +1781,7 @@ def _advertised_cc_models(request: web.Request) -> list[dict]:
         if advertised:
             return [
                 {
-                    "model_name": model_registry.from_provider_id(
-                        m.get("modelId", ""), "claude_code"
-                    ),
+                    "model_name": m.get("modelId", ""),
                     "display_name": m.get("name", "") or m.get("modelId", ""),
                     "description": m.get("description", ""),
                 }
@@ -1765,6 +1789,177 @@ def _advertised_cc_models(request: web.Request) -> list[dict]:
                 if m.get("modelId")
             ]
     return []
+
+
+def _advertised_adapter_models(request: web.Request, backend_id: str) -> list[dict]:
+    """Return raw model rows advertised by a live session on this harness.
+
+    Codex model ids are already the adapter's accepted wire values, so they are
+    preserved verbatim rather than translated through the Claude registry.
+    """
+    try:
+        state: DashboardState = request.app["state"]
+        providers = state.sessions.active_providers()
+    except (KeyError, AttributeError):
+        return []
+    for provider in reversed(providers):
+        client = getattr(provider, "client", None)
+        backend = getattr(client, "backend", None)
+        if not isinstance(backend, str):
+            backend = getattr(provider, "backend", None)
+        # Scoping a listing to the harness that was ASKED about, not a harness
+        # identity test: ``backend_id`` is the caller's argument, so this cannot
+        # go stale as harnesses are added. An unknown test double exposes no
+        # concrete backend string and stays fail-open, as it does above.
+        if isinstance(backend, str) and backend != backend_id:
+            continue
+        getter = getattr(provider, "available_models", None)
+        if not callable(getter):
+            continue
+        try:
+            advertised = getter()
+        except Exception:
+            continue
+        if advertised:
+            rows: list[dict] = []
+            for entry in advertised:
+                if not isinstance(entry, dict):
+                    continue
+                model_id = entry.get("modelId", "")
+                if not isinstance(model_id, str) or not model_id:
+                    continue
+                rows.append(
+                    {
+                        "model_name": model_id,
+                        "display_name": entry.get("name", "") or model_id,
+                        "description": entry.get("description", ""),
+                        "context_window": model_registry.model_window(model_id)
+                        or model_registry.REFERENCE_WINDOW_TOKENS,
+                    }
+                )
+            return rows
+    return []
+
+
+def _advertised_codex_models(request: web.Request) -> list[dict]:
+    return _advertised_adapter_models(request, ACP_BACKEND_CODEX)
+
+
+def _adapter_read_dir(state: DashboardState | None, session_key: str) -> Path:
+    """Directory an offline adapter catalog read runs in.
+
+    The active project when there is an unambiguous one, else the workspace a
+    session with no pinned project would run in. Never the operator's home:
+    that is neither where a session runs nor a directory whose configuration
+    should decide what the picker offers. It must match the CHAT cwd, because
+    every one of these harnesses reads project-local configuration — OpenCode
+    its provider list, Claude its ``.claude`` settings — so probing elsewhere
+    would advertise a catalog the session then does not have.
+    """
+    project = active_project_dir(state, session_key) if state else None
+    return Path(project) if project else Path(default_project_dir())
+
+
+# Retained name for the OpenCode-specific call sites and their tests.
+_opencode_read_dir = _adapter_read_dir
+
+
+async def _probe_adapter_catalog(request: web.Request, backend: str, sandbox_mode: str):
+    """Read *backend*'s catalog offline, resolving its work dir off the loop."""
+    from kiro_crew.acp.adapter_catalog import read_catalog
+
+    state = request.app.get("state")
+    work_dir = await asyncio.to_thread(_adapter_read_dir, state, _read_session_key(request))
+    return await read_catalog(backend, work_dir, sandbox_mode)
+
+
+def _catalog_rows(models: list[dict]) -> list[dict]:
+    """Map advertised entries to picker rows, ids VERBATIM."""
+    rows: list[dict] = []
+    for entry in models:
+        if not isinstance(entry, dict):
+            continue
+        model_id = entry.get("modelId", "")
+        if not isinstance(model_id, str) or not model_id:
+            continue
+        rows.append(
+            {
+                "model_name": model_id,
+                "display_name": entry.get("name", "") or model_id,
+                "description": entry.get("description", ""),
+            }
+        )
+    return rows
+
+
+async def _opencode_models(request: web.Request, sandbox_mode: str) -> list[dict]:
+    """Use a live advertised catalog, else discover configured ids without a turn.
+
+    A live session is preferred because it reports what the running adapter
+    actually accepts. The offline read is what makes the picker usable at all
+    for a role the operator has never opened a chat on — pinning OpenCode to
+    ``background`` is exactly that case.
+    """
+    from kiro_crew.acp.opencode import configured_model_ids
+
+    rows = _advertised_adapter_models(request, ACP_BACKEND_OPENCODE)
+    if not rows:
+        # OpenCode reads project-local configuration, so the catalog must be
+        # read from the directory a session would run in. Resolved off-loop:
+        # the fallback enters config_dir(), which stats and can mkdir.
+        state = request.app.get("state")
+        work_dir = await asyncio.to_thread(_opencode_read_dir, state, _read_session_key(request))
+        ids = await configured_model_ids(work_dir, sandbox_mode)
+        rows = [
+            {
+                "model_name": model_id,
+                "display_name": model_id,
+                "description": "",
+                "context_window": model_registry.model_window(model_id)
+                or model_registry.REFERENCE_WINDOW_TOKENS,
+            }
+            for model_id in ids
+        ]
+    return [
+        {
+            "model_name": "auto",
+            "display_name": "Auto",
+            "description": "",
+            "context_window": model_registry.REFERENCE_WINDOW_TOKENS,
+        },
+        *rows,
+    ]
+
+
+def _with_windows(rows: list[dict]) -> list[dict]:
+    """Attach a context window to catalog rows that carry none."""
+    return [
+        {
+            **row,
+            "context_window": row.get("context_window")
+            or model_registry.model_window(row.get("model_name", ""))
+            or model_registry.REFERENCE_WINDOW_TOKENS,
+        }
+        for row in rows
+        if row.get("model_name") != "auto"
+    ]
+
+
+def _codex_models(request: web.Request) -> list[dict]:
+    """Build the Codex picker from the adapter's live advertised set.
+
+    A cold dashboard can only offer Auto: guessing a concrete model would break
+    accounts whose entitlement differs. Once any Codex session initializes, its
+    ``models.availableModels`` response supplies the exact selectable rows.
+    """
+    auto = {
+        "model_name": "auto",
+        "display_name": "Auto",
+        "description": "",
+        "context_window": model_registry.REFERENCE_WINDOW_TOKENS,
+    }
+    advertised = _advertised_codex_models(request)
+    return [auto, *[row for row in advertised if row.get("model_name") != "auto"]]
 
 
 def _entitled_kiro_models(request: web.Request, models: list[dict]) -> list[dict]:
@@ -1809,6 +2004,15 @@ def _entitled_kiro_models(request: web.Request, models: list[dict]) -> list[dict
     # entitlements, i.e. keep offering exactly the models this narrowing exists to
     # hide. The most recently started session carries the most recent snapshot.
     for provider in reversed(providers):
+        client = getattr(provider, "client", None)
+        backend = getattr(client, "backend", None)
+        # A Kiro entitlement snapshot must not be sourced from an external
+        # adapter's model namespace. Unknown test doubles remain fail-open.
+        if isinstance(backend, str):
+            if backend == ACP_BACKEND_KIRO:
+                pass
+            else:
+                continue
         getter = getattr(provider, "available_models", None)
         if not callable(getter):
             continue
@@ -1843,113 +2047,82 @@ def _entitled_kiro_models(request: web.Request, models: list[dict]) -> list[dict
 
 
 def _cc_models(request: web.Request, configured_default: str = "") -> list[dict]:
-    """Assemble the CC model dropdown, scoped to what the account can actually use.
+    """Assemble the CC model dropdown from the adapter's advertised set.
 
-    The live backend's advertised set is AUTHORITATIVE when present. It is the
-    only source that reflects entitlement: claude-agent-acp captures it at session
-    init from what the signed-in account is actually served. The registry is a
-    static catalog of everything KiroCrew knows how to name, so a free-tier user
-    used to be offered the full flagship list and only discovered the truth when a
-    prompt failed.
-
-    So when anything is advertised, registry rows are FILTERED DOWN to it (keeping
-    the registry's cleaner display names for the survivors), and advertised models
-    the registry does not list are appended for forward-compat.
-
-    When NOTHING is advertised the registry is shown unfiltered. That is not a
-    fallback to the old behaviour by preference -- an empty advertised set means
-    "no session has initialized yet", which is indistinguishable from "this account
-    gets nothing", and showing an empty picker on a cold dashboard would be worse
-    than showing a superset.
-
-    ``auto`` is always present and always FIRST. It is the configured default
-    (``config.agent.model``) and a sentinel rather than a real model, so it is
-    never filtered by entitlement. It leads the list because the registry's own
-    ``default: true`` flag sorts the current flagship to the top, which presented
-    a specific paid model as the default in the picker.
+    A cold adapter has no entitlement information, so only the provider-default
+    sentinel is shown. Once a session reports models, those ids are authoritative;
+    the registry contributes display metadata only for rows that survived that
+    advertised-set filter. ``configured_default`` is retained for callers that
+    still pass it, but it can never resurrect an unadvertised model.
     """
-    advertised = _advertised_cc_models(request)
-    registry_rows = model_registry.display_list("claude_code")
+    return _merge_cc_rows(_advertised_cc_models(request), configured_default)
 
-    if advertised:
-        advertised_keys = {
-            _normalize_model_key(e.get("model_name", ""))
-            for e in advertised
-            if _normalize_model_key(e.get("model_name", ""))
+
+def _merge_cc_rows(advertised: list[dict], configured_default: str = "") -> list[dict]:
+    """Fold an advertised Claude list into picker rows, Auto first.
+
+    Split from :func:`_cc_models` so the OFFLINE catalog probe folds through the
+    identical path. A second copy of this merge is how a live picker and a cold
+    one would come to disagree about the same model.
+    """
+    registry_rows = {
+        _normalize_model_key(row.get("model_name", "")): row
+        for row in model_registry.display_list("claude_code")
+    }
+    merged: list[dict] = [
+        {
+            "model_name": "auto",
+            "display_name": "Auto",
+            "description": "",
+            "context_window": model_registry.REFERENCE_WINDOW_TOKENS,
         }
-        # Keep registry rows only when the backend also advertises them; "auto" is
-        # a sentinel, not an entitlement, so it survives regardless.
-        registry_rows = [
-            e
-            for e in registry_rows
-            if _normalize_model_key(e.get("model_name", "")) in advertised_keys
-            or _normalize_model_key(e.get("model_name", "")) == "auto"
-        ]
-
-    merged: list[dict] = []
-    seen: set[str] = set()
-    for entry in (*registry_rows, *advertised):
+    ]
+    seen = {"auto"}
+    advertised_keys = {
+        _normalize_model_key(row.get("model_name", ""))
+        for row in advertised
+        if _normalize_model_key(row.get("model_name", "")) not in ("", "auto")
+    }
+    for entry in advertised:
         name = entry.get("model_name", "")
         key = _normalize_model_key(name)
         if not key or key in seen:
             continue
-        seen.add(key)
-        merged.append(entry)
-    # "auto" leads. It may be absent entirely if a future registry drops the row,
-    # so synthesize it rather than assuming the filter above preserved one.
-    merged = [e for e in merged if _normalize_model_key(e.get("model_name", "")) == "auto"] + [
-        e for e in merged if _normalize_model_key(e.get("model_name", "")) != "auto"
-    ]
-    if not any(_normalize_model_key(e.get("model_name", "")) == "auto" for e in merged):
-        merged.insert(0, {"model_name": "auto", "display_name": "Auto", "description": ""})
-        seen.add("auto")
-    # Guarantee the configured default is present (e.g. a custom cc_model the
-    # backend doesn't advertise) so the selected model never vanishes. Resolve it
-    # to its canonical key first (it may be stored as a provider id or alias) so a
-    # default that already maps to a registry row does NOT produce a duplicate.
-    if configured_default:
-        canonical_default = model_registry.from_provider_id(
-            model_registry.to_provider_id(configured_default, "claude_code"), "claude_code"
+        row = dict(registry_rows.get(key, entry))
+        # The wire value stays the id the adapter advertised, because that is
+        # the only id its ``set_config_option`` accepts -- a registry row's
+        # canonical ``model_name`` would be offered here and then refused on
+        # selection.
+        row["model_name"] = name
+        # The adapter's own label wins over the registry's. An alias id folds
+        # onto whichever registry entry it pointed at when the row was written,
+        # so the registry answers "Opus 4.8 (1M context)" for an ``opus`` alias
+        # the account now serves as Opus 5 -- a label the operator would read as
+        # the model they are running. The registry is still consulted for the
+        # context window, which the adapter does not report.
+        #
+        # A display_name equal to the id is NOT a label: :func:`_advertised_cc_models`
+        # substitutes the id when the adapter names no model, and letting that
+        # through would replace a real registry name with a raw wire id.
+        for field in ("display_name", "description"):
+            supplied = entry.get(field)
+            if isinstance(supplied, str) and supplied.strip() and supplied != name:
+                row[field] = supplied
+        row["context_window"] = (
+            row.get("context_window")
+            or model_registry.model_window(name)
+            or model_registry.REFERENCE_WINDOW_TOKENS
         )
-        # Skip a blank canonical key: cc_model="auto" round-trips to "" (auto's
-        # provider id is empty), and _normalize_model_key("")=="" is never in
-        # `seen` (which holds "auto"), so without the `if key` guard — the same
-        # one the merge loop above uses — a blank-named row would be inserted as
-        # the first/selected dropdown option. The "auto" registry row already
-        # covers this case.
-        key = _normalize_model_key(canonical_default)
-        # Only resurrect the configured default when entitlement cannot contradict
-        # it: either nothing was advertised (unknown, so trust config) or it WAS
-        # advertised but the registry lacked a row. Force-including a model the
-        # backend did not advertise would reintroduce exactly the unusable option
-        # this filter removes -- a stale config pick outliving the entitlement.
-        may_include = not advertised or key in {
-            _normalize_model_key(e.get("model_name", "")) for e in advertised
-        }
-        if key and key not in seen and may_include:
-            # After "auto", never before it: "auto" is the configured default in
-            # the general case and leads the list.
-            merged.insert(
-                (
-                    1
-                    if merged and _normalize_model_key(merged[0].get("model_name", "")) == "auto"
-                    else 0
-                ),
-                {
-                    "model_name": canonical_default,
-                    "display_name": canonical_default,
-                    "description": "Configured default",
-                },
-            )
-    # Enrich every row with a context_window via the central authority so the CC
-    # dropdown carries the same field the kiro branch does (the frontend picker
-    # + tooltip read it uniformly). None -> reference (never a silent 200k).
-    for entry in merged:
-        if "context_window" not in entry:
-            name = entry.get("model_name", "")
-            entry["context_window"] = (
-                model_registry.model_window(name) or model_registry.REFERENCE_WINDOW_TOKENS
-            )
+        merged.append(row)
+        seen.add(key)
+
+    # Keep the argument meaningful for a live caller whose configured value is a
+    # provider id/alias: it is already represented by the advertised row above.
+    # The local variable documents that a stale value is intentionally ignored.
+    if configured_default:
+        configured_key = _normalize_model_key(configured_default)
+        if configured_key in advertised_keys:
+            logger.debug("Configured adapter model is advertised: %s", configured_default)
     return merged
 
 
@@ -1972,8 +2145,79 @@ def _wrap_list_models_argv(argv: list[str]) -> tuple[list[str], str | None]:
     return wrap_argv(argv, mode=configured_sandbox_mode(), is_kiro_cli=True)
 
 
+def _slot_backend(request: web.Request, configured: str) -> str:
+    """Resolve which harness ``/api/models`` should answer for.
+
+    A ``?slot=`` names a chat session, and a session may run on a harness other
+    than the configured default. Answering from the global value there would
+    offer the picker models the session's own adapter cannot serve — the exact
+    mismatch the advertised-set filter exists to prevent. An unknown slot falls
+    back to *configured* rather than erroring: the picker is a read, and a
+    superset is a better failure than an empty list.
+    """
+    # An explicit ``?backend=`` wins: the Settings role pickers ask about a
+    # harness no live session may be running, so there is nothing to infer it
+    # from. Validated against the registry rather than trusted, so a hand-typed
+    # value cannot select an unservable harness.
+    explicit = request.query.get("backend")
+    if explicit is not None:
+        from kiro_crew.acp_backends import resolve_selected_backend
+
+        return resolve_selected_backend(explicit)
+    slot = request.query.get("slot")
+    if not slot:
+        return configured
+    try:
+        state: DashboardState = request.app["state"]
+        target = state._slots.get(slot)
+    except (KeyError, AttributeError):
+        return configured
+    if target is None:
+        return configured
+    # ``None`` is "no per-session pick" and inherits; "" is an explicit kiro-cli
+    # pick. Collapsing them with ``or`` would answer kiro for every session that
+    # never touched the picker, on an install configured for another harness.
+    picked = getattr(target, "acp_backend", None)
+    return configured if picked is None else picked
+
+
 async def api_models(request: web.Request) -> web.Response:
-    """GET /api/models — list available models from the live kiro-cli ACP session."""
+    """GET /api/models — list models for a given ACP backend.
+
+    ``?backend=<id>`` names a harness outright (the Settings per-role pickers,
+    which ask about harnesses no session may be running). ``?slot=<key>`` scopes
+    the answer to that chat session's harness. With neither, the configured
+    default answers, which is what every other caller wants.
+    """
+    cfg = await asyncio.to_thread(KiroCrewConfig.load)
+    selected_backend = _slot_backend(request, getattr(cfg.agent, "acp_backend", ""))
+    if selected_backend == ACP_BACKEND_CLAUDE:
+        rows = _cc_models(request, cfg.agent.model)
+        if len(rows) <= 1:
+            # Only the Auto sentinel: no live Claude session has advertised yet.
+            # That is the SETUP state — an operator picking this harness has not
+            # opened a chat on it — so read the catalog offline rather than
+            # showing an empty picker until they happen to start a session.
+            catalog = await _probe_adapter_catalog(request, selected_backend, cfg.agent.sandbox)
+            if catalog.models:
+                rows = _merge_cc_rows(_catalog_rows(catalog.models))
+        return web.json_response(rows)
+    if selected_backend == ACP_BACKEND_CODEX:
+        rows = _codex_models(request)
+        if len(rows) <= 1:
+            catalog = await _probe_adapter_catalog(request, selected_backend, cfg.agent.sandbox)
+            if catalog.models:
+                rows = [rows[0], *_with_windows(_catalog_rows(catalog.models))]
+        return web.json_response(rows)
+    if selected_backend == ACP_BACKEND_OPENCODE:
+        try:
+            return web.json_response(await _opencode_models(request, cfg.agent.sandbox))
+        except (AcpError, OSError, RuntimeError, asyncio.TimeoutError):
+            logger.warning("OpenCode model discovery failed", exc_info=True)
+            return web.json_response(
+                {"error": "OpenCode model discovery failed", "code": "model_discovery_failed"},
+                status=503,
+            )
     # Signed-out gateways must never reach the spawn below. kiro-cli auto-opens
     # an interactive browser login for ANY subcommand run unauthenticated
     # (--no-interactive does not suppress it, and there is no opt-out env var),
@@ -2157,8 +2401,17 @@ async def api_effort_levels(request: web.Request) -> web.Response:
     Per-slot: when a ``?slot=`` query param resolves to a live ACP provider,
     return the levels that slot's CURRENT model reported (ACP escalation order),
     so concurrent slots on different models/backends each see their own set and
-    a model switch is reflected immediately. Falls back to the process-global
-    ordered list (cold start / no live provider / provider without the getter).
+    a model switch is reflected immediately.
+
+    ``?backend=<id>`` names a harness outright, for the Settings per-role
+    controls that ask about a harness no session is running. With no live
+    provider, an external adapter's ladder is read offline through the same
+    cached handshake the model list uses — its levels are per-harness (Codex
+    has no ``default`` rung, Claude does), so answering the process-global list
+    there offers levels the adapter will refuse.
+
+    Falls back to the process-global ordered list: no slot, no backend, or a
+    harness that reports no selector.
     """
     slot = request.query.get("slot")
     if slot:
@@ -2172,13 +2425,20 @@ async def api_effort_levels(request: web.Request) -> web.Response:
                     return web.json_response(levels)
         except (KeyError, AttributeError):
             pass
+    cfg = await asyncio.to_thread(KiroCrewConfig.load)
+    backend = _slot_backend(request, getattr(cfg.agent, "acp_backend", ""))
+    if backend in ACP_BACKENDS_CONFIG_MODEL:
+        catalog = await _probe_adapter_catalog(request, backend, cfg.agent.sandbox)
+        if catalog.effort_levels:
+            return web.json_response(catalog.effort_levels)
     return web.json_response(get_reasoning_effort_ordered())
 
 
 async def api_slash_commands(request: web.Request) -> web.Response:
     """GET /api/slash-commands — list available slash commands (provider-aware)."""
     cfg = KiroCrewConfig.load()
-    if is_claude_code(cfg.agent.provider):
+    selected_backend = getattr(cfg.agent, "acp_backend", "")
+    if is_claude_code(cfg.agent.provider) or selected_backend in ACP_BACKENDS_PROMPT_COMMANDS:
         state: DashboardState = request.app["state"]
         cc_commands: list[str] = []
         for provider in state.sessions.active_providers():
@@ -2792,7 +3052,7 @@ def _model_pin_rejected(model: str, request: web.Request, provider: str) -> str 
     # intentionally map away from. Its entitlement guard lives in its own
     # provider path, where full configured ids and bare advertised ids can be
     # canonicalized before comparison.
-    if is_claude_code(provider):
+    if is_claude_code(provider) or provider in ACP_BACKENDS_OWN_MODEL_CATALOG:
         return None
 
     # The registry knows each model under several spellings and only one is what
@@ -2907,7 +3167,14 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
         cfg = KiroCrewConfig.load()
         if name in cfg.agents:
             return web.json_response({"error": f"Agent '{name}' already exists"}, status=409)
-        model_reason = _model_pin_rejected(model, request, cfg.agent.provider)
+        model_reason = _model_pin_rejected(
+            model,
+            request,
+            # getattr, matching this module's other reads: ``cfg.agent`` is not
+            # always a full AgentConfig at this seam, and a bare attribute read
+            # turns a missing harness field into a 500 on agent creation.
+            getattr(cfg.agent, "acp_backend", "") or cfg.agent.provider,
+        )
         if model_reason:
             return web.json_response({"error": model_reason, "code": "invalid_model"}, status=400)
         cfg.agents[name] = KiroCrewAgentConfig(
@@ -2955,7 +3222,14 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
         if "model" in body:
             # Validated before the write, reusing the config loaded just above so
             # this costs no extra read.
-            model_reason = _model_pin_rejected(pending_model, request, cfg.agent.provider)
+            model_reason = _model_pin_rejected(
+                pending_model,
+                request,
+                # getattr, matching this module's other reads: ``cfg.agent`` is not
+                # always a full AgentConfig at this seam, and a bare attribute read
+                # turns a missing harness field into a 500 on agent creation.
+                getattr(cfg.agent, "acp_backend", "") or cfg.agent.provider,
+            )
             if model_reason:
                 return web.json_response(
                     {"error": model_reason, "code": "invalid_model"}, status=400

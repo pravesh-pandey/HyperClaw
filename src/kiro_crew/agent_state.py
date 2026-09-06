@@ -7,13 +7,23 @@ the default agent (``--agent <name>`` resolves to default with only a stderr
 per-agent bookkeeping OUT of the kiro spec and in this sidecar, so every spec
 stays schema-valid for kiro-cli.
 
-Two values are tracked, both kept in this sidecar rather than the kiro spec:
+Three values are tracked, all kept in this sidecar rather than the kiro spec:
 
 - ``model_managed`` (bool): whether an agent's ``model`` should track the
   shipped ``defaults.json`` (so a default bump propagates) or is an explicit
   user pick frozen against future bumps.
 - ``cc_model`` (str): a per-agent model for the ``claude_code`` provider (that
   backend can't pick a per-agent model from ``--agent`` the way kiro-cli does).
+- ``synced_global_model`` (str): the value ``agent.refresh_dynamic_fields``
+  last wrote into the spec's ``model`` field FROM ``config.json``'s
+  ``agent.model``. Ownership bookkeeping, not a pin of its own: it is what
+  lets that refresh tell "the spec still holds what I put there last time" (safe
+  to clear when the global reverts to ``auto``) apart from "something else has
+  since taken this field" (a per-agent pin made through the Agent Templates
+  editor, or a hand edit) — which it must never clobber. Without it, an
+  explicit global model synced into the spec and later reverted to ``auto``
+  stays frozen in the spec forever: nothing else ever un-syncs it, and a spec
+  pin outranks the global in ``resolve_effective_model``.
 
 State file (``~/.kiro/crew/agent_model_state.json``, honoring ``KIROCREW_HOME``)::
 
@@ -43,6 +53,7 @@ logger = logging.getLogger(__name__)
 _STATE_FILENAME = "agent_model_state.json"
 _MODEL_MANAGED = "model_managed"
 _CC_MODEL = "cc_model"
+_SYNCED_GLOBAL_MODEL = "synced_global_model"
 
 # Guards in-process read-modify-write races (e.g. dashboard PATCH vs gateway
 # refresh). Cross-process atomicity is provided by ``atomic_write``.
@@ -107,6 +118,44 @@ def set_cc_model(name: str, value: str | None) -> None:
             entry[_CC_MODEL] = str(value)
         else:
             entry.pop(_CC_MODEL, None)
+        if entry:
+            data[name] = entry
+        else:
+            data.pop(name, None)
+        _write(data)
+
+
+def get_synced_global_model(name: str) -> str | None:
+    """Return the value the global-config sync last wrote for this agent.
+
+    ``None`` means either the sync has never run for this agent, or its own
+    write was since cleared — both read as "nothing to reconcile against".
+    """
+    with _lock:
+        value = _entry(_read(), name).get(_SYNCED_GLOBAL_MODEL)
+    return value if isinstance(value, str) and value else None
+
+
+def set_synced_global_model(name: str, value: str | None) -> None:
+    """Set (or clear, when ``value`` is falsy) the sync's own last-written model.
+
+    Skips the write when the stored value already matches, so a steady-state
+    explicit global pin does not touch disk on every periodic refresh.
+    """
+    with _lock:
+        data = _read()
+        entry = data.get(name)
+        if not isinstance(entry, dict):
+            entry = {}
+        current = entry.get(_SYNCED_GLOBAL_MODEL)
+        if value:
+            if current == value:
+                return
+            entry[_SYNCED_GLOBAL_MODEL] = str(value)
+        else:
+            if _SYNCED_GLOBAL_MODEL not in entry:
+                return
+            entry.pop(_SYNCED_GLOBAL_MODEL, None)
         if entry:
             data[name] = entry
         else:

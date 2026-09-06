@@ -48,7 +48,7 @@ import { performAgentSlotSwitch } from '../lib/agentSwitch'
 import { api } from '../api/client'
 import { revealOrOpen } from '../components/FilePathMenu'
 import { resolveAskAfterSend } from '../lib/resolveAskAfterSend'
-import type { PlanStepInput } from '../api/client'
+import type { AcpBackendResponse, PlanStepInput } from '../api/client'
 import { useProvider } from '../providers'
 import { type AutoNudgeLoop } from '../components/AutoNudgePopover'
 import { fileReadUrl } from '../utils/fileReadUrl'
@@ -936,6 +936,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const location = useLocation()
   const queryClient = useQueryClient()
   const provider = useProvider()
+  const { data: acpBackendConfig } = useQuery<AcpBackendResponse>({
+    queryKey: ['acp-backends'],
+    queryFn: () => api.acpBackends(),
+    retry: false,
+    staleTime: 30_000,
+  })
+  const configuredBackend = acpBackendConfig?.configured ?? ''
   const [searchParams, setSearchParams] = useSearchParams()
   // Declared with the other top-of-component hooks because the ?sid= URL-sync
   // effect reads it (mobile replaces rather than pushes a session switch), and
@@ -966,6 +973,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // sidebar's does instead of accepting a second click.
   const creatingSlot = useAppSelector(s => s.chat.creatingSlot)
   const activeSlot = useAppSelector(s => s.chat.activeSlot)
+  // Must stay BELOW `activeSlot`: both are component-scope `const`s read
+  // during render, so reading it above the declaration is a temporal dead
+  // zone and throws before the page can paint.
+  const activeSlotBackend =
+    slots.find(s => s.key === activeSlot)?.acp_backend ?? configuredBackend
   // tool_call_ids in THIS slot that have a live MCP App render payload. Passed
   // to TurnBlock so app-bearing rows (which mount an interactive iframe) never
   // fold into a collapsible pane — collapsing hides the app, and re-expanding
@@ -1272,7 +1284,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   }, [dispatch])
   const { open: agentDropdown, setOpen: setAgentDropdown, filter: agentFilter, setFilter: setAgentFilter, dropdownRef: agentDropdownRef, inputRef: agentInputRef, filtered: filteredAgentsByName } = useFilteredDropdown(installedAgents)
   const filteredAgents = filteredAgentsByName
-  const availableModels = useAvailableModels()
+  const availableModels = useAvailableModels({
+    slot: activeSlot ?? undefined,
+    backend: activeSlotBackend,
+  })
   const { open: modelDropdown, setOpen: setModelDropdown, filter: modelFilter, setFilter: setModelFilter, dropdownRef: modelDropdownRef, inputRef: modelInputRef, filtered: filteredModels } = useFilteredDropdown(availableModels)
   // Roving-focus keyboard nav for the agent + model dropdowns (shared with StyledSelect/AgentSelector).
   const { onListKeyDown: onAgentListKeyDown } = useListboxKeyboard({
@@ -8300,6 +8315,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               stopState={currentSlot?.stop_state}
               approvalMode={displayMode}
               providerId={provider.id}
+              backendId={currentSlot?.acp_backend ?? configuredBackend}
               reasoningEffort={effectiveEffort}
               onReasoningEffortClick={provider.capabilities.reasoningEffort && modelSupportsEffort(shownModel === 'auto' ? '' : shownModel) ? (rect) => { setReasoningEffortBtnRect(rect); setReasoningEffortDropdown(!reasoningEffortDropdown) } : undefined}
               onAutoNudgeClick={setAutoNudgeOpen}
@@ -8405,6 +8421,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 hasEffort={!!(activeSlot && provider.capabilities.reasoningEffort && modelSupportsEffort(shownModel === 'auto' ? '' : shownModel))}
                 slot={activeSlot}
                 currentEffort={currentSlot?.reasoning_effort || ''}
+                backendId={currentSlot?.acp_backend}
                 defaultEffort={defaultEffort}
                 onSetDefault={() => {
                   setModelDropdown(false)

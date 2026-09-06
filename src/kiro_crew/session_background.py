@@ -29,6 +29,12 @@ else:
     LLMProvider = Any
 
 
+#: How much of a failed background start's reason survives into the error the
+#: caller raises. Bounded because the text is a foreign harness's diagnostic,
+#: which can be an entire multi-line config dump.
+_START_ERROR_CHARS = 400
+
+
 class _BackgroundSessionEntry(Protocol):
     """The live-registry session shape used by the background boundary."""
 
@@ -113,6 +119,12 @@ class BackgroundRuntimeState:
     runtime: _BackgroundRuntime | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     draining: list[_BackgroundRuntime] = field(default_factory=list)
+    #: Why the last provider-backed background start failed, for the error the
+    #: caller actually sees. ``_ensure_background`` logs the traceback and
+    #: returns, so without this the caller can only report that the session is
+    #: absent -- naming the harness instead of the reason, which sent an
+    #: operator looking at Crew when the adapter had refused their own config.
+    last_start_error: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -227,24 +239,81 @@ class BackgroundSessionRuntime:
     def _draining_bg_runtimes(self, runtimes: list[_BackgroundRuntime]) -> None:
         self.state.draining = runtimes
 
+    @staticmethod
+    def _provider_backend(provider: object) -> str | None:
+        """Read a provider's ACP harness without assuming one provider shape."""
+        backend = getattr(provider, "backend", None)
+        if not isinstance(backend, str):
+            client = getattr(provider, "client", None)
+            backend = getattr(client, "backend", None)
+        return backend if isinstance(backend, str) else None
+
     async def _ensure_background(self) -> None:
         """Create the persistent background session if it doesn't exist."""
         background_key = self._deps.background_key
         background_agent = self._deps.background_agent
         logger = self._deps.logger
+        configured_backend = self._configured_bg_backend()
+        stale_session: _BackgroundSessionEntry | None = None
         async with self._owner._lock:
-            if self._owner._closing or background_key in self._owner._sessions:
+            if self._owner._closing:
                 return
+            existing = self._owner._sessions.get(background_key)
+            if existing is not None:
+                existing_backend = self._provider_backend(existing.provider)
+                if existing_backend is None or existing_backend == configured_backend:
+                    return
+                # Remove only after identifying the exact stale object. Its
+                # semaphore is acquired below before shutdown, so an in-flight
+                # background turn reaches a safe boundary before its provider
+                # is retired.
+                stale_session = existing
+
+        if stale_session is not None:
+            await stale_session.semaphore.acquire()
+            try:
+                async with self._owner._lock:
+                    if self._owner._sessions.get(background_key) is stale_session:
+                        self._owner._sessions.pop(background_key, None)
+                    else:
+                        # Another creator already replaced this object while we
+                        # waited for its semaphore; leave that winner intact.
+                        return
+                try:
+                    await stale_session.provider.shutdown()
+                except Exception:
+                    # The old provider is no longer reachable from the session
+                    # registry; a teardown failure must not strand the new role
+                    # on the old harness or block replacement creation.
+                    logger.debug("stale background provider shutdown failed", exc_info=True)
+            finally:
+                stale_session.semaphore.release()
+
         # Create outside lock
         if not self._owner._provider_factory:
             return
         try:
-            provider = self._owner._provider_factory(background_key, agent=background_agent)
+            provider = self._owner._provider_factory(
+                background_key,
+                agent=background_agent,
+                acp_backend_override=self._owner._configured_bg_backend(),
+            )
             async with self._owner._start_sem:
                 await provider.start()
-        except Exception:
+        except Exception as exc:
             logger.warning("Failed to create background session", exc_info=True)
+            # Imported here, not at module scope: this is a leaf of the
+            # providers -> acp -> session cycle (see the TYPE_CHECKING guard
+            # above), and the redactors are only needed on the failure path.
+            from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+
+            # Dual-redact before the text becomes a user-facing error: it is a
+            # foreign harness's own diagnostic and may carry a URL or a token.
+            reason, _ = redact_exfiltration_urls(f"{type(exc).__name__}: {exc}")
+            reason, _ = redact_credentials(reason)
+            self.state.last_start_error = reason[:_START_ERROR_CHARS]
             return
+        self.state.last_start_error = ""
         async with self._owner._lock:
             # _closing is rechecked because the start above spans the window
             # in which close_all takes its session snapshot: registering now
@@ -266,7 +335,18 @@ class BackgroundSessionRuntime:
         """Return the configured background backend, or ``None`` if unreadable."""
         logger = self._deps.logger
         try:
-            backend = getattr(self._owner._cfg.agent, "acp_backend", self._deps.acp_backend_kiro)
+            agent_cfg = self._owner._cfg.agent
+            # The BACKGROUND role's harness, not the chat one: an operator who
+            # points background work at a cheaper harness must have that apply
+            # here, and a role pinning nothing inherits agent.acp_backend inside
+            # resolve_backend. Falls back to the raw attribute so a config object
+            # predating role_backends (or a test double) still answers.
+            resolver = getattr(agent_cfg, "resolve_backend", None)
+            backend = (
+                resolver("background")
+                if callable(resolver)
+                else getattr(agent_cfg, "acp_backend", self._deps.acp_backend_kiro)
+            )
         except Exception:
             logger.warning(
                 "agent.acp_backend is unreadable; treating the _bg backend as unknown",
@@ -398,7 +478,17 @@ class BackgroundSessionRuntime:
         await self._owner._ensure_background()
         sess = self._owner._sessions.get(self._deps.background_key)
         if sess is None:
-            raise RuntimeError("background session unavailable for non-kiro _bg provider")
+            # Name the REASON, not the harness. The start failure above is the
+            # only thing that lands here, and an adapter refusing the operator's
+            # own configuration is by far the common case -- reporting it as
+            # "non-kiro provider" pointed at the harness choice instead of at
+            # the malformed config file the adapter had already named.
+            reason = self.state.last_start_error
+            raise RuntimeError(
+                f"background session could not be started on backend "
+                f"{self._configured_bg_backend()!r}"
+                + (f": {reason}" if reason else " (no reason reported)")
+            )
         return self._deps.provider_bg_session_factory(sess)
 
     async def get_bg_session(self) -> object:
@@ -572,6 +662,7 @@ class BackgroundSessionRuntime:
                 replacement = self._owner._provider_factory(
                     background_key,
                     agent=background_agent,
+                    acp_backend_override=self._owner._configured_bg_backend(),
                 )
                 async with self._owner._start_sem:
                     await replacement.start()

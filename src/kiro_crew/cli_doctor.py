@@ -361,6 +361,7 @@ def _os_fix_hint(mac: str, linux: str, windows: str | None = None) -> str:
 # backend, and the verdict comes from ``agent_sdk.probe_backend`` so doctor and the
 # dashboard cannot give different answers.
 _CLAUDE_ACP_BIN = "claude-agent-acp"
+_CODEX_ACP_BIN = "codex-acp"
 
 # Managed servers doctor must NEVER add to ``allowedTools``.
 #
@@ -1051,6 +1052,32 @@ def _doctor_claude_backend() -> None:
         # probe's three-valued verdict exists to prevent, and which the dashboard
         # also refuses to make.
         print("  claude-acp:  ⚠️  could not check")
+
+
+def _doctor_codex_backend() -> None:
+    """Report the optional Codex ACP adapter through the shared probe."""
+    try:
+        from kiro_crew.acp_backends import ACP_BACKEND_CODEX
+        from kiro_crew.agent_sdk import INSTALLED, MISSING, probe_backend
+
+        codex_state = probe_backend(ACP_BACKEND_CODEX)
+    except Exception:
+        codex_state = None
+    if codex_state is None:
+        print("  codex-acp:   ⚠️  could not check")
+    elif codex_state.installed == INSTALLED:
+        where = shutil.which(_CODEX_ACP_BIN)
+        if where:
+            print(f"  codex-acp:   ✅ {where} (Codex installed)")
+        else:
+            print("  codex-acp:   ✅ resolved off PATH (Codex installed)")
+    elif codex_state.installed == MISSING:
+        missing = ", ".join(codex_state.missing_components) or "components"
+        print(f"  codex-acp:   ⏭  {missing} not found (optional agent backend)")
+        if codex_state.install_command:
+            print(f"               {codex_state.install_command}")
+    else:
+        print("  codex-acp:   ⚠️  could not check")
 
 
 def _doctor_path_launcher() -> None:
@@ -2524,6 +2551,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
         print("               Install kiro-cli per its docs, then: kiro-cli login")
 
     _doctor_claude_backend()
+    _doctor_codex_backend()
 
     git = shutil.which("git")
     if git:

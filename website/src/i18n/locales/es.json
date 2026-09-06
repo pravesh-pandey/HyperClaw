@@ -5507,7 +5507,6 @@
       "earlier_messages_open_session": "Mensajes anteriores — abrir la sesión completa (cierra la vista dividida)",
       "earlier_messages_unavailable": "Los mensajes anteriores ya no están disponibles en el historial de esta sesión.",
       "forked_from": "Bifurcado de {{name}}",
-      "model_list": "Lista de modelos",
       "session_ready_type_a_message_to_start": "Sesión lista. Escribe un mensaje para empezar.",
       "split_down": "Dividir abajo",
       "split_right": "Dividir a la derecha",
@@ -6463,7 +6462,25 @@
       "reasoning": "Razonamiento",
       "set_default_for_agent": "Establecer <model/> como modelo predeterminado para <agent/>",
       "set_default_for_new_sessions": "Valor predeterminado global para las nuevas sesiones…",
-      "type_to_filter": "Escribe para filtrar…"
+      "type_to_filter": "Escribe para filtrar…",
+      "provider": "Proveedor",
+      "provider_list": "Lista de proveedores",
+      "providers": "Proveedores",
+      "opencode": "OpenCode",
+      "loading_providers": "Cargando proveedores…",
+      "could_not_load_providers": "No se pudieron cargar los proveedores.",
+      "external_adapter_disclosure": "Los adaptadores externos usan sus propios permisos y se inician sin herramientas MCP de Crew. Las herramientas preaprobadas en su configuración pueden eludir los controles de aprobación y auditoría de Crew.",
+      "invalid_backend": "Este proveedor no se puede seleccionar en esta compilación.",
+      "backend_unavailable": "Este proveedor no está disponible en esta máquina.",
+      "backend_unavailable_with_command": "Este proveedor no está disponible en esta máquina. Instálalo con: {{command}}",
+      "installed_restart_required": "Está instalado en esta máquina, pero la puerta de enlace debe reiniciarse antes de usarlo.",
+      "missing_components": "Falta en esta máquina: {{components}}",
+      "missing_components_with_command": "Falta en esta máquina: {{components}}. Instálalo con: {{command}}",
+      "claude_code": "Claude Code",
+      "codex": "Codex",
+      "kas_kiro_agent": "KAS (kiro-agent)",
+      "kiro_cli": "Kiro CLI",
+      "same_as_chat": "Igual que el chat"
     },
     "monacoCodeBlock": {
       "close_editor": "Cerrar el editor",
@@ -9889,25 +9906,6 @@
       "pod_homes_left_on_disk_with_no_live_pod": "Homes de pods que quedan en disco sin un pod activo"
     },
     "developer": {
-      "agentBackendTab": {
-        "agent_backend": "Backend del agente",
-        "claude_code": "Claude Code",
-        "claude_uses_its_own_permissions": "Claude Code normalmente pide permiso antes de actuar, y {{productName}} filtra esa solicitud. Pero una herramienta aprobada previamente en la configuración propia de Claude — incluido un .claude/settings.json dentro del proyecto — no pregunta, así que las reglas de denegación y el registro de auditoría no ven esa llamada.",
-        "could_not_load_the_agent_backend": "No se pudo cargar el backend del agente.",
-        "could_not_save_the_agent_backend": "No se pudo guardar el backend del agente.",
-        "default_all_features_supported": "Predeterminado. Todas las funciones son compatibles.",
-        "experimental": "Experimental",
-        "install_check_failed": "No se pudo comprobar si esto está instalado en esta máquina.",
-        "installed_restart_required": "Instalado en esta máquina, pero este gateway debe reiniciarse antes de poder usarlo.",
-        "kas_kiro_agent": "KAS (kiro-agent)",
-        "kiro_cli": "Kiro CLI",
-        "loading_configuration": "Cargando la configuración…",
-        "missing_components": "Falta en esta máquina: {{components}}",
-        "missing_components_with_command": "Falta en esta máquina: {{components}}. Instálalo con: {{command}}",
-        "new_sessions_use_this_agent_a_session_that_is_al": "Las sesiones nuevas usan este agente. Una sesión ya abierta conserva el agente con el que se inició: cambiarlo aquí no la modifica a mitad de sesión.",
-        "retry": "Reintentar",
-        "set_is_fixed_at_gateway_start": "Qué agentes aparecen aquí se decide al iniciar el gateway. Una implementación gestionada puede restringir el conjunto por política; editar esa política surte efecto en el siguiente inicio."
-      },
       "featurePreviewsTab": {
         "crew": "Crew",
         "inbound_webhook_tokens_registered_contexts_and_r": "Tokens de webhooks entrantes, contextos registrados e historial de ejecuciones. La API funciona; la página no está terminada.",
@@ -9919,10 +9917,6 @@
     "developerPage": {
       "developer": "Desarrollador",
       "tabs": {
-        "agentBackend": {
-          "description": "Qué agente inician las sesiones nuevas: Kiro CLI, Claude Code o KAS",
-          "label": "Backend del agente"
-        },
         "archive": {
           "description": "Historial de sesiones rotado o compactado (retención de 7 días)",
           "label": "Archivo"
@@ -12026,6 +12020,7 @@
         "failed_to_save_profile": "No se pudo guardar el perfil",
         "failed_to_save_role_effort": "No se pudo guardar el esfuerzo del rol",
         "failed_to_save_role_model": "No se pudo guardar el modelo del rol",
+        "failed_to_save_provider": "No se pudo guardar el proveedor",
         "failed_to_save_session_summaries": "No se pudo guardar la configuración de resúmenes de sesión",
         "failed_to_save_soft_stop_budget": "No se pudo guardar el margen de parada suave",
         "failed_to_save_tips_preference": "No se pudo guardar la preferencia de consejos",

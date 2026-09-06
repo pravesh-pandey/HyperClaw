@@ -19,6 +19,7 @@ from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY, fire_tool_hooks, get_global_hook_store
 from kiro_crew.llm_helpers import provider_last_turn_usage, stream_and_collect_json
 from kiro_crew.messaging.link import telemetry_channel_of
+from kiro_crew.providers.acp import provider_label
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
@@ -340,7 +341,7 @@ async def execute_task(
                     session_key,
                     agent=agent or None,
                     project=str(work_dir) if work_dir else None,
-                    provider_type=KiroCrewConfig.load().agent.provider,
+                    provider_type=provider_label(client),
                 )
             else:
                 full_prompt = task_prompt

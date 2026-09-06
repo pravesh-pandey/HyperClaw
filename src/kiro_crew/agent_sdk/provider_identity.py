@@ -9,8 +9,9 @@ Four different things are spelled ``"claude_code"`` in this codebase and only
 the FIRST is this module's business. Consolidating the others into this one
 would be wrong, so they are named here to keep the next reader from trying:
 
-1. **This axis** -- the ``agent.provider`` config value, and the question
-   "is the configured provider Claude Code". Owned here.
+1. **This axis** -- the legacy ``agent.provider`` config value, and the
+   question "is the configured provider Claude Code". The public schema fixes
+   this value to ``"acp"``; this helper remains for legacy seam callers.
 
 2. **The session-map provider label** -- ``PROVIDER_LABEL_CLAUDE`` in
    :mod:`kiro_crew.acp.types`. Same string, different job: it indexes resume
@@ -48,9 +49,8 @@ pinned by ``test_importing_this_module_does_not_load_the_acp_package``.
 
 from __future__ import annotations
 
-#: ``agent.provider`` value selecting the Claude Code seam (claude-agent-acp).
-#: Dormant in the public build, where the schema admits only ``PROVIDER_ACP``;
-#: an edition re-registers it.
+#: Legacy ``agent.provider`` value selecting the Claude Code seam
+#: (claude-agent-acp). Public harness selection uses ``agent.acp_backend``.
 PROVIDER_CLAUDE_CODE = "claude_code"
 
 #: ``agent.provider`` value selecting the ACP family (kiro-cli and KAS). The

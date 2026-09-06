@@ -276,9 +276,7 @@ class TestAdoptProvider:
         assert sess.agent == "researcher"
         assert sess.approval_policy == "auto"
 
-    @pytest.mark.parametrize(
-        "start", [FirstTurnState.NOTHING_ARMED, FirstTurnState.FRESH]
-    )
+    @pytest.mark.parametrize("start", [FirstTurnState.NOTHING_ARMED, FirstTurnState.FRESH])
     def test_non_resumed_first_turn_states_survive_adoption(self, start) -> None:
         """Only the RESUMED half of the observation is stale on a replacement.
         The production caller recycles a mid-life, already-claimed session
@@ -407,8 +405,31 @@ class TestGetBgSessionNonKiro:
         mgr = SessionManager(cfg)
 
         with patch.object(mgr, "_ensure_background", AsyncMock()):
-            with pytest.raises(RuntimeError, match="background session unavailable"):
+            with pytest.raises(RuntimeError, match="could not be started on backend"):
                 await mgr.get_bg_session()
+
+    @pytest.mark.asyncio
+    async def test_the_error_names_why_the_start_failed_not_the_harness(self, cfg) -> None:
+        """The reason is the actionable half, and it used to be discarded.
+
+        ``_ensure_background`` logs its traceback and returns, so the caller can
+        only see that the session is absent. Reporting that as "non-kiro
+        provider" pointed an operator at their harness choice when the adapter
+        had already named the real cause -- a malformed config file of their own.
+        """
+        cfg.agent.acp_backend = ACP_BACKEND_CLAUDE
+        mgr = SessionManager(cfg)
+        runtime = mgr._background_runtime
+
+        async def _fail() -> None:
+            runtime.state.last_start_error = "AcpError: Configuration is invalid at opencode.jsonc"
+
+        with patch.object(mgr, "_ensure_background", _fail):
+            with pytest.raises(RuntimeError) as excinfo:
+                await mgr.get_bg_session()
+
+        assert "Configuration is invalid" in str(excinfo.value)
+        assert "non-kiro" not in str(excinfo.value)
 
     @pytest.mark.asyncio
     async def test_provider_path_retires_a_drained_runtime_left_by_a_switch(self, cfg) -> None:
@@ -531,9 +552,7 @@ class TestSessionSharingEligible:
 class TestContinuableKeys:
     def test_cache_hit_needs_no_disk_read(self, mgr) -> None:
         mgr._continuable_keys.add("subagent:a")
-        mgr._continuable_fallback = MagicMock(
-            side_effect=AssertionError("must not consult disk")
-        )
+        mgr._continuable_fallback = MagicMock(side_effect=AssertionError("must not consult disk"))
         assert mgr._is_continuable_key("subagent:a") is True
 
     def test_miss_without_a_fallback_is_stateless(self, mgr) -> None:
@@ -620,9 +639,7 @@ class TestRemoveIfUnclaimed:
         sess.provider.shutdown.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_an_unclaimed_session_unlinks_its_queued_temp_files(
-        self, mgr, tmp_path
-    ) -> None:
+    async def test_an_unclaimed_session_unlinks_its_queued_temp_files(self, mgr, tmp_path) -> None:
         img = tmp_path / "img.png"
         img.write_bytes(b"fake")
         sess = _register(mgr, "dashboard:1", first_turn=FirstTurnState.FRESH)
@@ -795,9 +812,7 @@ class TestStuckTurnCheck:
     async def test_a_turn_waiting_for_a_human_is_excluded(self, mgr) -> None:
         """That wait has its own budget (tool_approval_timeout_secs); reporting
         it here would put two components on different clocks."""
-        await _busy(
-            mgr, "d1", _parked_provider(_STUCK_TURN_REPORT_SECS + 10, awaiting=True)
-        )
+        await _busy(mgr, "d1", _parked_provider(_STUCK_TURN_REPORT_SECS + 10, awaiting=True))
         mgr.on_stuck_turn = MagicMock()
         await mgr._stuck_turn_check()
         mgr.on_stuck_turn.assert_not_called()

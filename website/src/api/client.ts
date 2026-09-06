@@ -1173,6 +1173,11 @@ export interface AcpBackendProbe {
   restart_required: boolean
 }
 
+export interface AcpBackendResponse {
+  backends: AcpBackendProbe[]
+  configured: string
+}
+
 let _sessionExpiredShown = false
 
 /**
@@ -2418,14 +2423,32 @@ export const api = {
     put('/api/agents/' + encodeURIComponent(name), body).then(j),
   deleteKirocrewAgent: (name: string) =>
     del('/api/agents/' + encodeURIComponent(name)).then(j),
-  models: () => fetch('/api/models').then(j),
-  effortLevels: (slot?: string) =>
-    fetch('/api/effort-levels' + (slot ? '?slot=' + encodeURIComponent(slot) : '')).then(j) as Promise<string[]>,
+  models: (slot?: string, backend?: string) => {
+    const query = backend !== undefined
+      ? '?backend=' + encodeURIComponent(backend)
+      : slot
+        ? '?slot=' + encodeURIComponent(slot)
+        : ''
+    return fetch('/api/models' + query).then(j)
+  },
+  // `backend` names a harness outright, for the Settings per-role controls that
+  // ask about a harness no session is running. Effort ladders are per-harness
+  // (Codex has no `default` rung, Claude does), so a static list would offer
+  // levels the adapter refuses. `backend` wins over `slot`, matching /api/models.
+  effortLevels: (slot?: string, backend?: string) => {
+    const params = new URLSearchParams()
+    if (backend !== undefined) params.set('backend', backend)
+    else if (slot) params.set('slot', slot)
+    const query = params.toString()
+    return fetch('/api/effort-levels' + (query ? '?' + query : '')).then(j) as Promise<string[]>
+  },
   slashCommands: () => fetch('/api/slash-commands').then(j),
   chatSlotAgent: (slot: string, agent: string) =>
     post('/api/chat/slots/' + encodeURIComponent(slot) + '/agent', { agent }).then(j) as Promise<{ ok?: boolean; agent?: string; workspace?: string }>,
   chatSlotModel: (slot: string, model: string) =>
     post('/api/chat/slots/' + encodeURIComponent(slot) + '/model', { model }).then(j) as Promise<{ ok?: boolean; model?: string }>,
+  chatSlotBackend: (slot: string, backend: string) =>
+    post('/api/chat/slots/' + encodeURIComponent(slot) + '/backend', { backend }, slot).then(j) as Promise<{ ok: true; backend: string; model: string; effort: string }>,
   /** This slot's auto-compact threshold override (null = follows the global). */
   chatSlotAutocompact: (slot: string) =>
     fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/autocompact').then(j) as Promise<{ pct: number | null; global_pct: number; min: number; max: number }>,
@@ -2752,7 +2775,7 @@ export const api = {
   // Owner-only, and absent (404) on an older gateway. Both of those reach the
   // caller as a rejection, which is the intended signal: "no probe information",
   // to be treated as fail-open rather than as a verdict.
-  acpBackends: () => fetch('/api/acp-backends').then(j) as Promise<{ backends: AcpBackendProbe[] }>,
+  acpBackends: () => fetch('/api/acp-backends').then(j) as Promise<AcpBackendResponse>,
   // Optional integrations — backend endpoints are graceful no-ops on a public
   // install (AIM / kiro usage are stubbed). Kept so the UI compiles and
   // degrades gracefully (panels render empty when the feature is absent).

@@ -5329,7 +5329,6 @@
       "earlier_messages_open_session": "更早的消息 — 打开完整会话（关闭分屏）",
       "earlier_messages_unavailable": "更早的消息在此会话的历史记录中不再可用。",
       "forked_from": "分叉自 {{name}}",
-      "model_list": "模型列表",
       "session_ready_type_a_message_to_start": "会话就绪。输入消息即可开始。",
       "split_down": "向下分屏",
       "split_right": "向右分屏",
@@ -6267,7 +6266,25 @@
       "reasoning": "推理",
       "set_default_for_agent": "将 <model/> 设为 <agent/> 的默认模型",
       "set_default_for_new_sessions": "新会话的全局默认…",
-      "type_to_filter": "输入以筛选…"
+      "type_to_filter": "输入以筛选…",
+      "provider": "提供商",
+      "provider_list": "提供商列表",
+      "providers": "提供商",
+      "opencode": "OpenCode",
+      "loading_providers": "正在加载提供商…",
+      "could_not_load_providers": "无法加载提供商。",
+      "external_adapter_disclosure": "外部适配器使用自己的权限，并且启动时不包含 Crew MCP 工具。在其配置中预先批准的工具可能绕过 Crew 的审批和审计控制。",
+      "invalid_backend": "此版本无法选择此提供商。",
+      "backend_unavailable": "此提供商在此计算机上不可用。",
+      "backend_unavailable_with_command": "此提供商在此计算机上不可用。安装命令：{{command}}",
+      "installed_restart_required": "已安装在此计算机上，但网关必须重启后才能使用。",
+      "missing_components": "此计算机缺少：{{components}}",
+      "missing_components_with_command": "此计算机缺少：{{components}}。安装命令：{{command}}",
+      "claude_code": "Claude Code",
+      "codex": "Codex",
+      "kas_kiro_agent": "KAS (kiro-agent)",
+      "kiro_cli": "Kiro CLI",
+      "same_as_chat": "与聊天相同"
     },
     "monacoCodeBlock": {
       "close_editor": "关闭编辑器",
@@ -9597,25 +9614,6 @@
       "pod_homes_left_on_disk_with_no_live_pod": "磁盘上没有对应运行 Pod 的遗留主目录"
     },
     "developer": {
-      "agentBackendTab": {
-        "agent_backend": "代理后端",
-        "claude_code": "Claude Code",
-        "claude_uses_its_own_permissions": "Claude Code 通常会先请求批准，{{productName}} 会对该请求做把关。但如果某个工具已在 Claude 自身设置里预先批准（包括项目内那份 .claude/settings.json），它就不会再请求，因此拒绝规则和审计日志看不到这次调用。",
-        "could_not_load_the_agent_backend": "无法加载代理后端。",
-        "could_not_save_the_agent_backend": "无法保存代理后端。",
-        "default_all_features_supported": "默认。支持所有功能。",
-        "experimental": "实验性",
-        "install_check_failed": "无法检查本机是否已安装。",
-        "installed_restart_required": "本机已安装，但此 gateway 需重启后才能使用。",
-        "kas_kiro_agent": "KAS (kiro-agent)",
-        "kiro_cli": "Kiro CLI",
-        "loading_configuration": "正在加载配置…",
-        "missing_components": "本机缺少：{{components}}",
-        "missing_components_with_command": "本机缺少：{{components}}。安装命令：{{command}}",
-        "new_sessions_use_this_agent_a_session_that_is_al": "新会话使用此代理。已打开的会话保持启动时所用的代理；在此切换不影响正在进行的会话。",
-        "retry": "重试",
-        "set_is_fixed_at_gateway_start": "此处显示哪些 agent 在 gateway 启动时确定。受管部署可通过策略限制该集合；修改策略需下次启动才生效。"
-      },
       "featurePreviewsTab": {
         "crew": "Crew",
         "inbound_webhook_tokens_registered_contexts_and_r": "入站 Webhook 令牌、已注册的上下文和运行历史。API 可用，但页面尚未完成。",
@@ -9627,10 +9625,6 @@
     "developerPage": {
       "developer": "开发者",
       "tabs": {
-        "agentBackend": {
-          "description": "新会话启动哪个代理 — Kiro CLI、Claude Code 或 KAS",
-          "label": "代理后端"
-        },
         "archive": {
           "description": "已轮转/压缩的会话历史（保留 7 天）",
           "label": "归档"
@@ -11689,6 +11683,7 @@
         "failed_to_save_profile": "保存配置文件失败",
         "failed_to_save_role_effort": "保存角色推理强度失败",
         "failed_to_save_role_model": "保存角色模型失败",
+        "failed_to_save_provider": "保存提供商失败",
         "failed_to_save_session_summaries": "无法保存会话摘要设置",
         "failed_to_save_soft_stop_budget": "保存软停止预算失败",
         "failed_to_save_tips_preference": "保存提示偏好设置失败",

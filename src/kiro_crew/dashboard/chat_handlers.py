@@ -25,7 +25,13 @@ from aiohttp.client_exceptions import ClientConnectionResetError
 from kiro_crew import members as members_mod
 from kiro_crew import model_registry
 from kiro_crew.acp.client import AcpModelUnavailable
+from kiro_crew.acp_backends import (
+    ACP_BACKENDS_CONFIG_MODEL,
+    ACP_BACKENDS_OWN_MODEL_CATALOG,
+    selectable_backends,
+)
 from kiro_crew.agent_discovery import cached_project_agent_names, warm_project_agent_names
+from kiro_crew.agent_sdk import MISSING, probe_backend
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
 from kiro_crew.config.loader import (
     AUTOCOMPACT_PCT_MAX,
@@ -4380,12 +4386,19 @@ def _model_rejected_reason(model_name: str, provider: str | None = None) -> str 
     """
     if not model_name or model_name == "auto":
         return None
+    acp_backend = ""
     if provider is None:
         try:
-            provider = KiroCrewConfig.load().agent.provider
+            agent_config = KiroCrewConfig.load().agent
+            provider = agent_config.provider
+            acp_backend = agent_config.acp_backend
         except Exception:  # pragma: no cover - config load is resilient
             provider = ""
-    if is_claude_code(provider):
+    if (
+        provider in ACP_BACKENDS_CONFIG_MODEL
+        or is_claude_code(provider)
+        or acp_backend in ACP_BACKENDS_CONFIG_MODEL
+    ):
         return None
     if model_registry.is_canonical_key(model_name):
         return (
@@ -4403,8 +4416,8 @@ def _wire_model_id(provider: AcpProvider, model_name: str) -> str:
     accepts the backend's own ids — two namespaces. Mirrors the normalisation the
     warm-pool post-claim switch does in ``SessionManager``: kiro wants the bare
     dotted id via ``to_acp_id`` (which translates canonical keys and passes
-    kiro's own ids through unchanged), the claude backend wants the
-    ``global.anthropic.*`` id.
+    kiro's own ids through unchanged), while every external adapter wants the
+    id it advertised, verbatim.
 
     Returns "" when the change cannot be expressed as a ``set_model`` on this
     backend, which tells the caller to fall back to a session reset.
@@ -4412,10 +4425,14 @@ def _wire_model_id(provider: AcpProvider, model_name: str) -> str:
     # The dashboard sends "" for Auto, but the literal "auto" also passes the
     # guard (stale clients / direct API calls), so both mean "provider default".
     is_default = model_name in ("", "auto")
-    if provider.is_claude_backend:
-        # The claude backend has no id meaning "let the server choose", so
-        # returning to default needs a reset.
-        return "" if is_default else model_registry.to_provider_id(model_name, "claude_code")
+    if getattr(provider.client, "backend", None) in ACP_BACKENDS_OWN_MODEL_CATALOG:
+        # The external adapters advertise and accept their model ids verbatim,
+        # and none of them has a config value meaning "return to the backend
+        # default", so Auto needs a reset. Translating here is what broke the
+        # Claude switch: ``to_provider_id("opus", "claude_code")`` produces
+        # ``global.anthropic.claude-opus-4-8[1m]``, which claude-agent-acp
+        # refuses — its own catalog offers ``opus``.
+        return "" if is_default else model_name
     if is_default:
         # kiro DOES express Auto as a real model id — but only switch to it when
         # this session's backend actually advertised it.
@@ -4464,6 +4481,32 @@ async def _reapply_effort_after_live_switch(
         return False
 
 
+def _live_harness_is_stale(slot: _ChatSlot, provider: AcpProvider) -> bool:
+    """True when the live process runs a different harness than the slot selects.
+
+    Resolved POSITIVELY from both backend strings; an unknown shape (a focused
+    test double with no concrete backend) answers False and keeps the existing
+    live-switch behaviour rather than forcing a reset on every slot.
+
+    A slot that never picked (``acp_backend is None``) inherits the configured
+    harness, so that is what the live process is compared against — otherwise a
+    global provider change would leave every inheriting slot switching models on
+    its stale process.
+    """
+    live = getattr(getattr(provider, "client", None), "backend", None)
+    if not isinstance(live, str):
+        return False
+    selected = getattr(slot, "acp_backend", None)
+    if selected is None:
+        try:
+            selected = getattr(KiroCrewConfig.load().agent, "acp_backend", None)
+        except Exception:
+            # A config read failure must not turn every model pick into a
+            # reset; fall back to the pre-existing behaviour.
+            return False
+    return isinstance(selected, str) and selected != live
+
+
 async def _try_live_model_switch(
     name: str, slot: _ChatSlot, provider: LLMProvider | None, model_name: str
 ) -> bool:
@@ -4489,6 +4532,16 @@ async def _try_live_model_switch(
         # response mid-turn races the streaming prompt loop on stdout for the
         # non-multiplexed client. The UI disables the model button while a turn
         # runs, so this is defensive — take the old reset path.
+        return False
+    if _live_harness_is_stale(slot, provider):
+        # The slot has been pointed at a different harness and this process is
+        # still the previous one. A model id means something only inside ONE
+        # harness's namespace, so sending it here asks the OLD harness for the
+        # NEW harness's model — which is how picking Claude's ``sonnet`` came
+        # back refused against Codex's ``gpt-5.6-*`` catalog, naming an account
+        # entitlement that had nothing to do with the failure. A reset is the
+        # correct recovery: it respawns on the selected harness and applies the
+        # model there, where the id is meaningful.
         return False
     wire = _wire_model_id(provider, model_name)
     if not wire:
@@ -5119,6 +5172,145 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
         slot.reasoning_effort = effort
     state.push_slots_update()
     return web.json_response({"ok": True, "reasoning_effort": effort})
+
+
+async def _persist_sticky_backend(backend: str) -> None:
+    """Record *backend* as the harness new sessions start on.
+
+    There is no provider row in Settings, so the last switch a session made IS
+    the default for the next one. It is stored in ``agent.acp_backend`` — the
+    same key config load already normalizes and governance already floors — so
+    stickiness inherits that gating instead of introducing a second store with
+    its own rules. Best-effort: a failed write leaves the previous default in
+    place and never fails the switch the caller already committed.
+    """
+
+    def _write() -> None:
+        cfg = KiroCrewConfig.load()
+        if cfg.agent.acp_backend == backend:
+            return
+        cfg.agent.acp_backend = backend
+        cfg.save()
+
+    try:
+        await asyncio.to_thread(_write)
+    except Exception:
+        logger.warning("Could not persist sticky acp_backend=%r", backend, exc_info=True)
+
+
+async def api_chat_slot_backend(request: web.Request) -> web.Response:
+    """POST /api/chat/slots/{slot}/backend — switch this session's ACP harness.
+
+    Body: ``{"backend": "" | "claude" | "codex" | "kas"}`` (``""`` = kiro-cli).
+
+    Unlike model and effort there is no live switch: a harness is a different
+    subprocess speaking a different protocol dialect, and its session ids are
+    not interchangeable. So this always resets the slot's session and lets the
+    existing provider-switch path replay history into the new one — silently, by
+    product decision. The slot's model is cleared in the same commit because a
+    model id is only meaningful inside one harness's namespace; effort is kept,
+    since the adapter push already steps down to whatever the new session
+    advertises.
+    """
+    state: DashboardState = request.app["state"]
+    name = request.match_info["slot"]
+    slot = state._slots.get(name)
+    if not slot:
+        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+    denied = _deny_cross_app_slot_access(request, slot, name, "slot_backend")
+    if denied is not None:
+        return denied
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    backend = body.get("backend", "")
+    if not isinstance(backend, str):
+        return web.json_response(
+            {"error": "backend must be a string", "code": "invalid_backend"}, status=400
+        )
+
+    # Selectability is the BUILD + policy question, and it is the same registry
+    # config load gates on — read per call so a backend an edition registered at
+    # boot is honoured and a policy denial takes effect without a restart.
+    selectable = await asyncio.to_thread(selectable_backends)
+    if backend not in selectable:
+        return web.json_response(
+            {
+                "error": f"backend {backend or 'kiro'!r} is not selectable on this build",
+                "code": "invalid_backend",
+            },
+            status=400,
+        )
+
+    # Installability is the MACHINE question and a separate answer. Reported as
+    # 409 rather than 400 so the client can distinguish "this build refuses it"
+    # from "install the adapter and retry" and surface the install command.
+    probe = await asyncio.to_thread(probe_backend, backend)
+    if probe is not None and probe.installed == MISSING:
+        return web.json_response(
+            {
+                "error": "the adapter for this backend is not installed",
+                "code": "backend_unavailable",
+                "missing_components": list(probe.missing_components),
+                "install_command": probe.install_command,
+            },
+            status=409,
+        )
+
+    # A slot that never touched the picker carries None and runs the configured
+    # default, so compare against what it would ACTUALLY run — otherwise picking
+    # the harness a session is already on would tear it down for nothing.
+    effective = slot.acp_backend
+    if effective is None:
+        try:
+            effective = (await asyncio.to_thread(KiroCrewConfig.load)).agent.acp_backend
+        except Exception:
+            effective = None
+    async with slot._lock:
+        if effective == backend and slot.acp_backend is not None:
+            return web.json_response(
+                {
+                    "ok": True,
+                    "backend": backend,
+                    "model": slot.model,
+                    "effort": slot.reasoning_effort,
+                }
+            )
+        logger.info("Slot %s acp_backend switched to %r", name, backend or "kiro")
+        session_key = _history_key_for(name)
+        # Committed BEFORE the reset, for the reason the effort switch documents:
+        # a message landing while the teardown await is in flight cold-starts from
+        # the slot's CURRENT values, so they must already be the new ones. The
+        # model is dropped to the inherit sentinel here — carrying a kiro model id
+        # into Codex (or the reverse) pins an id the new harness cannot serve.
+        slot.acp_backend = backend
+        slot.model = ""
+        try:
+            await _reset_slot_session(state, slot, session_key)
+        except Exception:
+            logger.exception("Slot %s backend switch: old session teardown incomplete", name)
+            await _persist_sticky_backend(backend)
+            state.push_slots_update()
+            return web.json_response(
+                {
+                    "ok": True,
+                    "backend": backend,
+                    "model": slot.model,
+                    "effort": slot.reasoning_effort,
+                    "warning": "old session teardown incomplete",
+                }
+            )
+    await _persist_sticky_backend(backend)
+    state.push_slots_update()
+    return web.json_response(
+        {
+            "ok": True,
+            "backend": backend,
+            "model": slot.model,
+            "effort": slot.reasoning_effort,
+        }
+    )
 
 
 async def api_chat_slot_reload(request: web.Request) -> web.Response:

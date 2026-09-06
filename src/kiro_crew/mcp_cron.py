@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew import model_registry
+from kiro_crew.acp_backends import ACP_BACKENDS_OWN_MODEL_CATALOG
 from kiro_crew.config.loader import config_dir
 from kiro_crew.cron import (
     CronJob,
@@ -60,6 +61,30 @@ from kiro_crew.sel import sel
 from kiro_crew.validation import MCP_CRON_SCHEMAS, ValidationError, validate_tool_args
 
 logger = logging.getLogger(__name__)
+
+
+def _configured_acp_backend() -> str:
+    """Read the selected ACP harness for model fields on cron jobs."""
+    try:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        return KiroCrewConfig.load().agent.acp_backend
+    except Exception:
+        return ""
+
+
+def _normalize_cron_model(model_id: str, backend: str) -> str:
+    """Keep a cron model in the namespace its selected ACP harness accepts.
+
+    The external adapters advertise the ids they accept and take them verbatim,
+    so membership in ``ACP_BACKENDS_OWN_MODEL_CATALOG`` is what decides this --
+    never a per-harness equality test, which hands the next adapter a namespace
+    it refuses (harness-parity H5).
+    """
+    if backend in ACP_BACKENDS_OWN_MODEL_CATALOG:
+        return "" if model_id == "auto" else model_id
+    return model_registry.to_provider_id(model_id, "claude_code")
+
 
 # Patterns for _parse_time_string
 _RE_IN_DURATION = re.compile(
@@ -132,9 +157,9 @@ _CRON_SECRET_NAME_RE = re.compile(
 # backtick pairs. We deliberately reject a lone backtick too — a stray one means
 # unmatched-quoting confusion, not a benign literal.
 _CRON_CMD_SUBST_RE = re.compile(
-    r"\$\(|"     # $( ... ) and $(( ... )) (`\(` covers both since $((… starts with $()
-    r"\$'|"      # $'...' ANSI-C quoting: `$'\x2e\x73\x73\x68'` decodes to ".ssh"
-    r"`",        # backtick — matches EITHER end of a pair, and unmatched too
+    r"\$\(|"  # $( ... ) and $(( ... )) (`\(` covers both since $((… starts with $()
+    r"\$'|"  # $'...' ANSI-C quoting: `$'\x2e\x73\x73\x68'` decodes to ".ssh"
+    r"`",  # backtick — matches EITHER end of a pair, and unmatched too
 )
 # A ``${...}`` that is NOT a plain ``${NAME}`` reference. Every other brace form
 # COMPOSES a string at expansion time, which is the same hazard as command
@@ -177,9 +202,7 @@ _CRON_POSITIONAL_PARAM_RE = re.compile(r"\$[0-9@*#]|\$\{[0-9@*#]")
 # start-of-command / after a separator / after `do`/`then` and word-bounded, so
 # `git log --format=for` (keyword as an argument) and a quoted `'while ...'` are
 # NOT matched. `case` is included because its patterns compose the same way.
-_CRON_SHELL_KEYWORD_RE = re.compile(
-    r"(?:^|[;&|]|\bdo\b|\bthen\b)\s*\b(?:for|while|until|case)\b"
-)
+_CRON_SHELL_KEYWORD_RE = re.compile(r"(?:^|[;&|]|\bdo\b|\bthen\b)\s*\b(?:for|while|until|case)\b")
 # Pathname expansion (globbing) is a FOURTH way to compose a sensitive path that
 # never appears literally: ``cat ~/.s?h/id_rsa`` reads ``~/.ssh/id_rsa`` (verified
 # against real sh, all three metacharacters). Blanket-refusing ``*``/``?``/``[``
@@ -210,10 +233,10 @@ _CRON_MAX_GLOB_WORD = 256
 # ``a=b`` as an assignment is harmless here: this map is only ever used to make
 # the credential-path scan see MORE, never to permit something.
 _CRON_LOCAL_ASSIGN_RE = re.compile(
-    r"(?:^|[;&|\s])\s*"          # start-of-command, a separator, or whitespace
+    r"(?:^|[;&|\s])\s*"  # start-of-command, a separator, or whitespace
     r"([A-Za-z_][A-Za-z0-9_]*)"  # variable name
-    r"="                         # literal =
-    r"([^\s;&|]*)",             # value up to next separator
+    r"="  # literal =
+    r"([^\s;&|]*)",  # value up to next separator
 )
 # A backslash escaping any character. sh drops the backslash and keeps the
 # character during word expansion, so the scan must do the same to see the string
@@ -328,7 +351,7 @@ def _glob_could_reach_credentials(command: str) -> bool:
             # stripped above). Both fnmatch directions so a glob in EITHER the
             # command or the sensitive name is caught.
             for start in range(len(cand_segments) - depth + 1):
-                win_segs = cand_segments[start:start + depth]
+                win_segs = cand_segments[start : start + depth]
                 # sh does NOT let a leading `*`/`?`/`[` match a leading dot — a
                 # hidden file is excluded from globbing unless the pattern spells
                 # the dot literally. Every sensitive name here is a dotfile
@@ -720,9 +743,7 @@ def _vet_shell_command(command: str) -> str | None:
     # fragment). `resolved` already has the tracked `A=.s; ... $A` cases expanded,
     # so this does not fire on those.
     leftover = {
-        name
-        for name in _CRON_VAR_REF_RE.findall(resolved)
-        if name not in _CRON_VAR_REF_ALLOWED
+        name for name in _CRON_VAR_REF_RE.findall(resolved) if name not in _CRON_VAR_REF_ALLOWED
     }
     if leftover:
         return (
@@ -1815,7 +1836,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             # the chat model path (which also skips membership); the runtime is
             # model-agnostic with a gateway fallback. Only normalize the "auto"
             # inherit sentinel.
-            resolved_model = model_registry.to_provider_id(model_arg, "claude_code")
+            resolved_model = _normalize_cron_model(model_arg, _configured_acp_backend())
             if resolved_model == "":
                 # "auto" sentinel (canonical key with no pinned provider id):
                 # explicit inherit — same as leaving model unset.
@@ -1957,7 +1978,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 # valid. Matches the chat model path (which also skips
                 # membership); the runtime is model-agnostic with a gateway
                 # fallback. Only normalize the "auto" inherit sentinel.
-                resolved_model = model_registry.to_provider_id(m, "claude_code")
+                resolved_model = _normalize_cron_model(m, _configured_acp_backend())
                 if resolved_model == "":
                     # "auto" sentinel — explicit inherit, same as clearing.
                     m = ""

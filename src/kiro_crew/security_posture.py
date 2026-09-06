@@ -1228,6 +1228,21 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # third party — the redaction is defensive so a credential-bearing
         # installer error cannot leak into the log ring / /api/logs stream.
         "platform/update_provider.py",
+        # Same shape, one layer down: bounds and redacts the OpenCode CLI's own
+        # stderr before it rides an `AcpError` into the gateway log, so a
+        # provider config echoing a key or an exfiltration URL cannot reach the
+        # log ring / /api/logs stream. The model-discovery handler answers the
+        # browser a fixed `model_discovery_failed` body, never this text, so
+        # this is log hygiene rather than an egress boundary.
+        "acp/opencode.py",
+        # Same shape again: bounds and redacts a foreign adapter's own start
+        # failure so it can name the REASON in the RuntimeError the background
+        # one-liners raise, instead of naming the harness and discarding why.
+        # That exception never leaves the process as text -- every caller
+        # (`chat_nav`, `chat_title`, `suggestions`) logs it with `exc_info` and
+        # answers its client a fixed body or fails soft -- so this is diagnostic
+        # hygiene for the log ring, not an egress boundary.
+        "session_background.py",
         # Same shape: redacts the unparseable LLM decomposition response before
         # writing the diagnostic ERROR line to the gateway log. Defensive log
         # hygiene so a response echoing a credential or exfiltration URL cannot

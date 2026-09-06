@@ -46,7 +46,53 @@ provider.
 | Value | Agent | Status |
 |-------|-------|--------|
 | `""` (default) | kiro-cli | full support |
+| `claude` | Claude Code through `claude-agent-acp` | install the adapter and Claude CLI; model and effort are live ACP options |
+| `codex` | Codex through `codex-acp` | install the adapter; model and reasoning effort are live ACP options |
 | `kas` | kiro-agent (KAS) | runs chat; some surfaces still missing |
+
+### Per-role harnesses and models
+
+`agent.role_backends.background` and `agent.role_backends.subagent` can route
+unattended work through a different ACP harness than interactive chat. An
+omitted role key inherits `agent.acp_backend`; an explicit empty string selects
+Kiro CLI, even when chat uses another harness. `agent.role_models` provides the
+corresponding optional model pins. Role model validation uses the selected role
+harness's advertised models, so a Codex role is not checked against Kiro's list.
+
+### Claude Code
+
+Install the public ACP adapter and the Claude Code CLI, then select the harness:
+
+```bash
+npm install --global @agentclientprotocol/claude-agent-acp
+kirocrew config set agent.acp_backend claude
+```
+
+The dashboard's model picker is populated from the adapter after a session
+starts; before that, it offers only `auto`. `agent.model` accepts the advertised
+Claude model id and `agent.reasoning_effort` is sent through the adapter's
+`effort` config option. Claude Code uses its own sign-in and transcript store.
+The public ACP path currently starts Claude sessions without Kiro Crew MCP
+servers, so Kiro Crew's built-in MCP tools are not available on this harness.
+
+### Codex
+
+Install the public Codex ACP adapter and select it:
+
+```bash
+npm install --global @agentclientprotocol/codex-acp
+kirocrew config set agent.acp_backend codex
+```
+
+Codex model ids are passed to the adapter verbatim. The dashboard learns the
+available models from the live `model` config option; a cold dashboard offers
+only `auto`. `agent.reasoning_effort` maps to Codex's `reasoning_effort` config
+option, and the effort menu is limited to the levels the active session
+advertises. Codex owns authentication and its session history. As with Claude,
+the public adapter path starts without Kiro Crew MCP servers.
+
+`agent.session_sharing` and the `agent.tool_search*` settings apply to the
+kiro-cli/KAS runtime only; external adapters run their own session process.
 
 **What works on `kas`:** normal chat — your configured agent, its prompt, its tool
 allowlist, and session resume. The context-usage percentage meter, compaction
@@ -181,8 +227,8 @@ Set via `kirocrew config set agent.acp_backend kas`.
 | `agent.provider` | LLM provider backend. `"acp"` (KiroACP / kiro-cli) is the only accepted value | `"acp"` |
 | `agent.default_agent` | Default agent name for new sessions. Empty resolves from the agent config | `""` |
 | `agent.approval_mode` | `"auto"` or `"interactive"` | `"auto"` |
-| `agent.model` | Default LLM model for new sessions. `"auto"` defers to the agent config, then to Kiro's own default. Editable from Settings → Chat → Model; a per-session model picker overrides it for that session only | `"auto"` |
-| `agent.reasoning_effort` | Default reasoning effort on models that support it. One of `""`, `low`, `medium`, `high`, `xhigh`, `max`; `""` defers to the provider/model default. A per-session override wins | `""` |
+| `agent.model` | Default model for new sessions. `"auto"` lets the selected harness choose; Kiro/KAS may resolve it from the Kiro agent config, while Claude/Codex use their live advertised options. Editable from Settings → Chat → Model; a per-session model picker overrides it for that session only | `"auto"` |
+| `agent.reasoning_effort` | Default reasoning effort on models that support it. One of `""`, `low`, `medium`, `high`, `xhigh`, `max`; `""` defers to the provider/model default. Claude sends `effort`, Codex sends `reasoning_effort`, and Kiro/KAS use their runtime command. A per-session override wins | `""` |
 | `agent.sandbox` | `"auto"` (use Kiro Crew OS-level sandbox, or defer to the kiro-cli internal sandbox on macOS) or `"off"` (skip the Kiro Crew sandbox) | `"auto"` |
 | `agent.streaming` | Stream response text as it is generated | `true` |
 | `agent.bot_name` | Custom name the bot identifies as | `""` |

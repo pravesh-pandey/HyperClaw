@@ -6,7 +6,7 @@ filesystem layout, agent-definition format, session store, credential store,
 sandbox posture, MCP delivery channel, billing surface, and permission engine
 that sit around the wire and differ per backend.
 
-Three backends are described, and **all three are selectable on a plain public
+Five backends are described, and **all five are selectable on a plain public
 build**. The baseline registry `BASELINE_SELECTABLE_BACKENDS` (`acp_backends.py`)
 contains every id in `ACP_BACKENDS_KNOWN`; there is no frozen
 `ACP_BACKENDS_SELECTABLE` constant any more, because the set is a registry an
@@ -19,15 +19,15 @@ adapter it spawns is a public npm package
 (`CLAUDE_ACP_NPM_PKG = "@agentclientprotocol/claude-agent-acp"`). Nothing in the
 spawn path is edition-private; the selector switch was the only missing piece.
 
-What actually varies for CC is **machine-local**: it needs two binaries the
-operator installs — the `claude-agent-acp` adapter and the `claude` CLI handed to
-it as `CLAUDE_CODE_EXECUTABLE`. That is a third question, kept apart from the
-other two on purpose: capability (`acp_backends.py`, can this build drive the
-harness), permission (the `agent_backend` governance scope, may this deployment
-select it), and installation (`agent_sdk/backend_install.py`, is it on this
-machine). Only the third can change without a config write or a new build, and it
-is the one that reports `installed` / `missing` / `unknown` per component with the
-command that installs the adapter. A backend this deployment may not select is
+What actually varies for the external adapters is **machine-local**: Claude Code
+needs the `claude-agent-acp` adapter and `claude` CLI, while Codex needs the
+`codex-acp` adapter. That is a third question, kept apart from the other two on
+purpose: capability (`acp_backends.py`, can this build drive the harness),
+permission (the `agent_backend` governance scope, may this deployment select it),
+and installation (`agent_sdk/backend_install.py`, is it on this machine). Only
+the third can change without a config write or a new build, and it is the one
+that reports `installed` / `missing` / `unknown` per component with the command
+that installs an adapter. A backend this deployment may not select is
 **hidden** from the dashboard rather than greyed out, so no "not enabled in this
 build" state is rendered for any agent.
 
@@ -38,11 +38,10 @@ chosen through `agent.acp_backend` rather than by adding a provider class — an
 [../modules/acp-client.md](../modules/acp-client.md) for the seam's protocol-level
 details.
 
-Claude Code is the only backend in this table that is a genuinely *foreign* host.
-KAS is Kiro's own agent service reached through `kiro-cli acp`, so it shares
-Kiro's identity store, runtime and model vocabulary. That is why the CC column,
-not the KAS column, is what tells a future provider author what they are actually
-signing up for.
+Claude Code and Codex are the genuinely *foreign* hosts in this document. KAS is
+Kiro's own agent service reached through `kiro-cli acp`, so it shares Kiro's
+identity store, runtime and model vocabulary. The CC column and the Codex notes
+below describe what a future external-adapter author is signing up for.
 
 Where a CC row is marked **(companion)**, the behaviour is supplied by an
 internal companion package rather than by this repository, and is described here
@@ -56,6 +55,37 @@ public build starts a CC session without any of them. They are what makes it
 missing, and the largest of those is stated plainly in §5: a CC session with zero
 MCP tools.
 
+Codex follows the external-adapter contract with a few adapter-specific values:
+`ACP_BACKEND_CODEX = "codex"` selects the public `codex-acp` package
+(`npm install --global @agentclientprotocol/codex-acp`), which speaks numeric ACP
+protocol version `1` and owns its authentication and transcript store. It accepts
+raw model ids through the `model` config option and exposes reasoning levels
+through `reasoning_effort`; Kiro Crew maps the shared `agent.reasoning_effort`
+setting to that wire id. Codex uses one process per session, has no
+`session/set_mode`, and the public path currently supplies no Kiro Crew MCP
+servers. Its compaction and command/tool output are normalized by the ACP client
+from the adapter's `contextCompaction` metadata and `rawOutput` fields.
+
+OpenCode is the second harness that brings its own model catalog.
+`ACP_BACKEND_OPENCODE = "opencode"` spawns the operator's installed `opencode acp`
+— the ACP server is a subcommand of the CLI itself, so unlike Claude Code and
+Codex there is **no separate adapter package to install and no npm remedy to
+offer**; `agent_sdk/backend_install.py` probes for the one binary. It speaks
+numeric ACP protocol version `1`, owns its authentication and transcript store,
+and takes both `model` and `effort` through `session/set_config_option`. Its
+model ids are `provider/model` wire strings from the operator's own provider
+configuration — never registry keys — so they are passed verbatim and
+`ACP_BACKENDS_OWN_MODEL_CATALOG` keeps `auto` from being expanded into a Kiro id
+the harness cannot serve. Because those ids depend on configuration rather than
+on entitlement, the picker can read them **offline** (`acp/opencode.py` runs
+`opencode models` under the configured sandbox posture), which is what lets an
+operator pin OpenCode to a role they have never opened a chat on.
+
+The tables below retain the three reference columns (kiro-cli, KAS, and CC) to
+keep the long-form comparison readable. Apply the Codex and OpenCode paragraphs
+above for the external-adapter rows, and do not infer Kiro's model namespace,
+session-sharing, or MCP defaults for either.
+
 ## Column meaning
 
 | Column | Backend |
@@ -63,6 +93,8 @@ MCP tools.
 | **kiro-cli** | `ACP_BACKEND_KIRO = ""` — the default. Kiro's CLI over ACP. |
 | **KAS** | `ACP_BACKEND_KAS = "kas"` — Kiro's agent service, run through `kiro-cli acp --agent-engine v3 --auth-method cli`. |
 | **CC** | `ACP_BACKEND_CLAUDE = "claude"` — `claude-agent-acp`. Selectable on a public build; usable on a given machine once the operator has installed both the adapter and the `claude` CLI. |
+| **Codex** | `ACP_BACKEND_CODEX = "codex"` — `codex-acp`. Selectable on a public build; usable once the operator has installed the adapter. |
+| **OpenCode** | `ACP_BACKEND_OPENCODE = "opencode"` — `opencode acp`. Selectable on a public build; usable once the operator has installed the OpenCode CLI. No separate adapter package. |
 
 ## 1. Agent definition and layout
 

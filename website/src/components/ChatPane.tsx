@@ -14,7 +14,7 @@ import QueueStack, { SubagentDeliveryProgress, splitPaneMessages } from './Queue
 import SubagentProgressBar from '../pages/chat/SubagentProgressBar'
 import AgentDropdownList, { DefaultAgentRow, ManageAgentsFooter } from './AgentDropdownList'
 import { agentSwitchFailureMessage } from '../utils/agentSwitchFeedback'
-import ModelDropdownList from './ModelDropdownList'
+import ModelEffortDropdown from './ModelEffortDropdown'
 import { SlotProvider } from '../providers/SlotContext'
 import { useProvider } from '../providers'
 import { useAgents } from '../hooks/useAgents'
@@ -34,7 +34,7 @@ import { mergeRecoveredDraft } from '../utils/chatDrafts'
 import { triggerRefresh, updateSlot } from '../store/dashboardSlice'
 import { performSlotSwitch } from '../lib/slotSwitch'
 import { performAgentSlotSwitch } from '../lib/agentSwitch'
-import { api } from '../api/client'
+import { api, type AcpBackendResponse } from '../api/client'
 import { resolveAskAfterSend } from '../lib/resolveAskAfterSend'
 import { classifyDrop } from '../utils/dropClassify'
 import { serializeDirTokens, spliceDirTokens, VIDEO_EXT } from '../utils/fileTokens'
@@ -100,6 +100,13 @@ export default function ChatPane({
   // One instance covers both dropdown filter inputs (never open at once).
   const dispatch = useAppDispatch()
   const provider = useProvider()
+  const { data: acpBackendConfig } = useQuery<AcpBackendResponse>({
+    queryKey: ['acp-backends'],
+    queryFn: () => api.acpBackends(),
+    retry: false,
+    staleTime: 30_000,
+  })
+  const configuredBackend = acpBackendConfig?.configured ?? ''
   // Same gate the main chat uses: hide a Connections-owned OAuth banner only
   // while the card that owns that flow is reachable.
   const connectionsUiOn = useConnectionsUiEnabled()
@@ -242,7 +249,10 @@ export default function ChatPane({
       .catch(() => setDefaultAgentFailed(true))
   }, [dispatch])
   const agentDD = useFilteredDropdown(installedAgents)
-  const availableModels = useAvailableModels()
+  const availableModels = useAvailableModels({
+    slot: slotKey,
+    backend: paneSlot?.acp_backend ?? configuredBackend,
+  })
   const modelDD = useFilteredDropdown(availableModels)
   // See ChatPage: display what will actually run, not a pin the account lost
   // access to. The degraded flag gates it — a cached list served while
@@ -783,6 +793,7 @@ export default function ChatPane({
           agentName={paneAgentName}
           agentSource={installedAgents.find((a) => a.name === paneAgentName)?.source}
           modelName={shownModel}
+          backendId={paneSlot?.acp_backend ?? configuredBackend}
           contextPct={contextPct}
           contextUsedTokens={contextTokens?.used}
           contextWindowTokens={contextTokens?.window || provider.getContextWindow(shownModel)}
@@ -898,34 +909,22 @@ export default function ChatPane({
         {modelDD.open && modelBtnRect && createPortal(
           /* The labeled dialog owns roving-focus key handling for its descendants. */
           // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions
-          <div
-            ref={modelDD.dropdownRef}
-            role="dialog"
-            aria-label={i18nT('components.chatPane.model_list')}
-            tabIndex={-1}
-            onKeyDown={onModelListKeyDown}
-            className="fixed z-[9999] bg-bg-elevated border border-border rounded-xl shadow-xl min-w-[252px] max-w-[348px] flex flex-col p-1 gap-0.5 animate-slide-up"
-            style={(() => { const left = Math.max(8, Math.min(modelBtnRect.left, window.innerWidth - 348)); return { bottom: window.innerHeight - modelBtnRect.top + 4, left } })()}
-          >
-            <div className="px-1.5 pt-1.5 pb-1">
-              <input
-                ref={modelDD.inputRef}
-                type="text"
-                aria-label={i18nT('components.chatPane.type_to_filter')}
-                placeholder={i18nT('components.chatPane.type_to_filter')}
-                value={modelDD.filter}
-                onChange={(e) => modelDD.setFilter(e.target.value)}
-                /* Enter/Escape live on the portal container's onListKeyDown
-                   (useListboxKeyboard), which claims Enter against IME
-                   composition internally — a second handler here would give
-                   the same keys two dispatch paths. */
-                className={ddInputCls}
-              />
-            </div>
-            <div role="listbox" aria-label={i18nT('components.chatPane.model_list')} className="overflow-y-auto max-h-[280px]">
-              <ModelDropdownList models={modelDD.filtered} activeModel={shownModel} onSelect={(name) => { switchModel(name); modelDD.setOpen(false) }} />
-            </div>
-          </div>,
+          <ModelEffortDropdown
+            anchorRect={modelBtnRect}
+            dropdownRef={modelDD.dropdownRef}
+            inputRef={modelDD.inputRef}
+            onListKeyDown={onModelListKeyDown}
+            models={modelDD.filtered}
+            activeModel={shownModel}
+            onSelectModel={name => switchModel(name)}
+            filter={modelDD.filter}
+            setFilter={modelDD.setFilter}
+            onClose={() => modelDD.setOpen(false)}
+            hasEffort={!!(paneSlot && provider.capabilities.reasoningEffort)}
+            slot={slotKey}
+            currentEffort={paneSlot?.reasoning_effort || ''}
+            backendId={paneSlot?.acp_backend}
+          />,
           document.body,
         )}
 

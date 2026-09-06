@@ -4,14 +4,15 @@ This is the ``agent.acp_backend`` axis, and it is NOT the axis
 :mod:`kiro_crew.agent_sdk.provider_identity` owns. The two are independent and a
 reader who conflates them will draw the wrong conclusion from either:
 
-* ``agent.provider`` -- ``"acp"`` or ``"claude_code"``. Which *seam* serves the
-  session. Answered by ``provider_identity.is_claude_code``.
-* ``agent.acp_backend`` -- ``""`` (kiro-cli), ``"kas"``, or ``"claude"``. Which
-  *harness* the ACP seam spawned. Answered here.
+* ``agent.provider`` -- the public value is ``"acp"``; ``"claude_code"`` is
+  retained for legacy seam callers. Which *seam* serves the session is answered
+  by ``provider_identity.is_claude_code``.
+* ``agent.acp_backend`` -- ``""`` (kiro-cli), ``"kas"``, ``"claude"``, or
+  ``"codex"``. Which *harness* the ACP seam spawned. Answered here.
 
 Both can say "claude" about the same session and neither implies the other: the
-public build admits only ``provider == "acp"`` while still refusing
-``acp_backend == "claude"``, so the pair is genuinely two-dimensional.
+public build admits ``provider == "acp"`` and can select an external harness
+through ``acp_backend``, so the pair remains genuinely two-dimensional.
 
 Why this module takes the backend NAME and not the provider
 -----------------------------------------------------------
@@ -48,21 +49,28 @@ backend-install registry its ``__init__`` builds -- into every client import.
 A one-line comparison against a constant both modules already read from
 ``acp_backends`` is the cheaper duplicate.
 
-Only ``claude`` is here
------------------------
+Named adapter backends are here
+-------------------------------
 ``providers.acp`` also exposes ``is_kas_backend`` and ``is_kiro_backend``, and
 they are deliberately not consolidated: both have zero readers outside
 ``providers/acp.py``, so there is no second place for them to drift from. And a
 bare ``is_kiro_backend_name`` helper would be an attractive nuisance for the
 empty-string reason above -- it would answer True for every failed lookup. Add
-either one when a real second reader appears, not before.
+either one when a real reader appears, not before. Codex has a named helper too
+because external-adapter context and model paths need to distinguish it from
+the provider seam's public ``"acp"`` value.
 """
 
 from __future__ import annotations
 
-from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE
+from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX
 
-__all__ = ["ACP_BACKEND_CLAUDE", "is_claude_backend_name"]
+__all__ = [
+    "ACP_BACKEND_CLAUDE",
+    "ACP_BACKEND_CODEX",
+    "is_claude_backend_name",
+    "is_codex_backend_name",
+]
 
 
 def is_claude_backend_name(backend: str | None) -> bool:
@@ -83,3 +91,8 @@ def is_claude_backend_name(backend: str | None) -> bool:
     backend's own spelling, so this answers False rather than guessing.
     """
     return backend == ACP_BACKEND_CLAUDE
+
+
+def is_codex_backend_name(backend: str | None) -> bool:
+    """Whether *backend* names the codex-acp harness."""
+    return backend == ACP_BACKEND_CODEX

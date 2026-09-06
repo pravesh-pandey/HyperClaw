@@ -221,6 +221,29 @@ def _validate_reasoning_effort(raw: object) -> str:
     return ""
 
 
+def _validate_acp_backend(raw: object) -> str:
+    """Return *raw* if this build can still serve that harness, else ``""``.
+
+    Re-gated on restore rather than trusted, for the same reason config load
+    re-gates ``agent.acp_backend``: the persisted value outlives the build that
+    wrote it, and a slot naming a harness this build no longer registers must
+    degrade to Kiro (``""``) instead of reaching the spawn path. Reads the
+    registry per call so a backend registered at boot by an edition is honoured.
+    """
+    if not isinstance(raw, str):
+        return ""
+    if not raw:
+        # An explicitly persisted kiro-cli pick. It needs no registry check —
+        # kiro is the floor and is always selectable.
+        return ""
+    from kiro_crew.acp_backends import resolve_selected_backend
+
+    resolved = resolve_selected_backend(raw)
+    if resolved != raw:
+        logger.warning("Discarding unselectable persisted acp_backend: %r", raw)
+    return resolved
+
+
 def _validate_autocompact_pct(raw: object) -> float | None:
     """Return *raw* as a threshold percent within the documented range, else None.
 
@@ -957,6 +980,8 @@ def _rehydrate_slot_from_history(
                 )
         if meta.get("reasoning_effort"):
             slot.reasoning_effort = _validate_reasoning_effort(meta["reasoning_effort"])
+        if meta.get("acp_backend") is not None:
+            slot.acp_backend = _validate_acp_backend(meta["acp_backend"])
         if meta.get("autocompact_pct") is not None:
             slot.autocompact_pct = _validate_autocompact_pct(meta["autocompact_pct"])
         if meta.get("workspace"):
@@ -1436,6 +1461,8 @@ def _apply_recent_session(
             logger.debug("Failed to resolve model for restored slot %s", slot_name, exc_info=True)
     if meta.get("reasoning_effort"):
         slot.reasoning_effort = _validate_reasoning_effort(meta["reasoning_effort"])
+    if meta.get("acp_backend") is not None:
+        slot.acp_backend = _validate_acp_backend(meta["acp_backend"])
     if meta.get("autocompact_pct") is not None:
         slot.autocompact_pct = _validate_autocompact_pct(meta["autocompact_pct"])
     if meta.get("workspace"):
@@ -2655,6 +2682,7 @@ def _save_slot_to_history(
                     "mode": slot.mode or "",
                     "artifact": slot._artifact or "",
                     "reasoning_effort": slot.reasoning_effort or "",
+                    "acp_backend": slot.acp_backend,
                     "color_index": slot.color_index,
                     "color_hex": slot.color_hex or "",
                     "color_theme": slot.color_theme or "",
@@ -2951,6 +2979,11 @@ def _save_slot_to_history(
             meta_line["model"] = slot.model
             if slot.reasoning_effort:
                 meta_line["reasoning_effort"] = slot.reasoning_effort
+            # ``is not None``, not truthiness: "" is an explicit kiro-cli pick
+            # and must persist, while None means "follow the configured default"
+            # and must stay absent so a later default change still reaches it.
+            if slot.acp_backend is not None:
+                meta_line["acp_backend"] = slot.acp_backend
             # Unconditional, matching the empty-window merge mirror: None is
             # the cleared "follow the global" value, not an absent field.
             meta_line["autocompact_pct"] = slot.autocompact_pct

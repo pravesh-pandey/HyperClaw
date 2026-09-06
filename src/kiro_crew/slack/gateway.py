@@ -243,6 +243,7 @@ from kiro_crew.platform.update_governance import (
     tracks_upstream,
     update_blocked_reason,
 )
+from kiro_crew.providers.acp import provider_label
 from kiro_crew.providers.base import LLMEvent
 from kiro_crew.safety_override import flush_breadcrumb_writes, safety_override
 from kiro_crew.sandbox import ensure_agents_slice_limits, warm_backend
@@ -4445,7 +4446,7 @@ class GatewayOrchestrator:
                         "do NOT repeat the same content]\n"
                         + "\n".join(f"- {a}" for a in job.acked_items)
                     )
-                _provider = self._cfg.agent.provider if hasattr(self, "_cfg") else "acp"
+                _provider = provider_label(client)
                 # Off-loop: build_message embeds the episodic query.
                 full_message, _ = await run_in_embed_pool(
                     self.ctx_builder.build_message,
@@ -5376,7 +5377,7 @@ class GatewayOrchestrator:
         try:
             client, is_new, _resumed = await self.sessions.get_or_create(key)
             _acquired = True
-            _provider = self._cfg.agent.provider if hasattr(self, "_cfg") else "acp"
+            _provider = provider_label(client)
             full_msg, _ = await run_in_embed_pool(
                 self.ctx_builder.build_message, tagged, is_new, key, provider_type=_provider
             )
@@ -7342,7 +7343,7 @@ class GatewayOrchestrator:
                         client, is_new, _resumed = await self.sessions.get_or_create(parent_key)
                         _acquired = True
                         _footer_client = client
-                        _provider = self._cfg.agent.provider if hasattr(self, "_cfg") else "acp"
+                        _provider = provider_label(client)
                         if self.ctx_builder:
                             msg, _ = await run_in_embed_pool(
                                 self.ctx_builder.build_message,
@@ -7560,7 +7561,7 @@ class GatewayOrchestrator:
                 try:
                     client, is_new, _resumed = await self.sessions.get_or_create(parent_key)
                     acquired = True
-                    _provider = self._cfg.agent.provider if hasattr(self, "_cfg") else "acp"
+                    _provider = provider_label(client)
                     if self.ctx_builder:
                         msg, _ = await run_in_embed_pool(
                             self.ctx_builder.build_message,

@@ -89,7 +89,6 @@ class AllocationDeps:
     load_watchdog_settings: Callable[[str], object]
     advertised_model_ids: Callable[[Any], list[str]]
     model_is_unusable: Callable[[str, list[str]], bool]
-    to_provider_id: Callable[[str, str], str]
     to_acp_id: Callable[[str], str]
     inc_session_created: Callable[[], None]
     get_sel: Callable[[], Any]
@@ -207,6 +206,25 @@ def _collect_parent_runtime_kwargs(
         if value is not None:
             kwargs[key] = value
     return kwargs
+
+
+def _pool_blocking_backend(deps: "AllocationDeps", override: object) -> bool:
+    """True when a per-session harness pick makes the warm pool unusable.
+
+    ``None`` means the caller expressed no preference and inherits the configured
+    harness — which is exactly what the pool was spawned with, so it stays
+    claimable. Any other value is compared against that configured harness; only
+    a genuine difference bypasses, so the common case (every session on the
+    default) keeps its warm start. A config read that fails answers "blocking":
+    serving a session from a pool whose identity could not be confirmed is the
+    failure this gate exists to prevent.
+    """
+    if override is None:
+        return False
+    try:
+        return str(override) != deps.load_config().agent.acp_backend
+    except Exception:
+        return True
 
 
 class SessionAllocationService:
@@ -1153,6 +1171,13 @@ class SessionAllocationService:
             pool_decision = "bypass_cwd"
         elif extra_factory_kwargs.get("reasoning_effort_override"):
             pool_decision = "bypass_effort"
+        elif _pool_blocking_backend(self._deps, extra_factory_kwargs.get("acp_backend_override")):
+            # The warm pool is pre-spawned from the CONFIGURED harness, so a
+            # session that picked a different one cannot be served from it: the
+            # pooled child is a different binary speaking a different protocol
+            # dialect. Bypassing is the only correct answer — claiming would hand
+            # the session a harness it did not choose, silently.
+            pool_decision = "bypass_backend"
         elif extra_env:
             pool_decision = "bypass_env"
         else:
@@ -1193,13 +1218,14 @@ class SessionAllocationService:
                             if owner._pool_agent
                             else None
                         )
-                        if self._deps.is_claude_backend(provider):
-                            switch_model = self._deps.to_provider_id(model, "claude_code")
-                            comparable_pool = (
-                                self._deps.to_provider_id(pool_model, "claude_code")
-                                if pool_model
-                                else pool_model
-                            )
+                        if getattr(provider, "owns_model_catalog", False) is True:
+                            # The external adapters' config options take the raw
+                            # model id -- the one they advertised. No provider
+                            # namespace is needed when a warm process changes
+                            # owners, and translating into one produces an id
+                            # the adapter refuses.
+                            switch_model = model
+                            comparable_pool = pool_model
                         else:
                             switch_model = self._deps.to_acp_id(model)
                             comparable_pool = (

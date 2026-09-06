@@ -17,7 +17,13 @@ from typing import Any, Dict, List
 import pytest
 
 from kiro_crew import acp_backends
-from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE, ACP_BACKEND_KAS, ACP_BACKEND_KIRO
+from kiro_crew.acp_backends import (
+    ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_CODEX,
+    ACP_BACKEND_KAS,
+    ACP_BACKEND_KIRO,
+    ACP_BACKEND_OPENCODE,
+)
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.handlers.agents import _supply_live_enum
 from kiro_crew.dashboard.handlers.core import _EDITABLE_CONFIG
@@ -137,5 +143,13 @@ def test_baseline_ships_every_known_backend():
     already answers the second one.
     """
     baseline: List[str] = sorted(acp_backends.BASELINE_SELECTABLE_BACKENDS)
-    assert baseline == sorted([ACP_BACKEND_KIRO, ACP_BACKEND_CLAUDE, ACP_BACKEND_KAS])
+    assert baseline == sorted(
+        [
+            ACP_BACKEND_KIRO,
+            ACP_BACKEND_CLAUDE,
+            ACP_BACKEND_CODEX,
+            ACP_BACKEND_KAS,
+            ACP_BACKEND_OPENCODE,
+        ]
+    )
     assert baseline == sorted(acp_backends.ACP_BACKENDS_KNOWN)

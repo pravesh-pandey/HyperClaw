@@ -1,8 +1,9 @@
 ## LLM Provider Abstraction
 
-KiroCrew drives a single LLM backend: `kiro-cli` over ACP. The `LLMProvider`
-interface is retained as a thin seam (consumers depend only on the ABC), but
-there is exactly one concrete provider — `agent.provider` is fixed to `acp`.
+Kiro Crew drives one provider implementation, `AcpProvider`, over ACP. The
+`LLMProvider` interface is retained as a thin seam (consumers depend only on the
+ABC), and `agent.provider` remains fixed to `acp`; the selected harness lives in
+`agent.acp_backend`.
 
 ### Architecture
 
@@ -20,17 +21,17 @@ there is exactly one concrete provider — `agent.provider` is fixed to `acp`.
             ┌──────┴──────┐
             │ AcpProvider │
             │ acp.py      │
-            │ kiro-cli    │
+            │ Kiro / Claude / Codex /     │
+            │ OpenCode / KAS              │
             └─────────────┘
 ```
 
 **Note:** the removed Bedrock provider and the removed standalone provider were
 **deleted** during de-Amazoning, along with their config fields and the
-multi-provider dispatch factory. `acp/client.py` keeps a dormant
-`ACP_BACKEND_CLAUDE` seam (`AcpProvider` can in principle drive
-`claude-agent-acp`) so an internal companion can re-register a Claude backend,
-but the public provider factory never selects it — `kiro-cli` is the only
-backend.
+multi-provider dispatch factory. `AcpProvider` adapts the first-class Kiro
+harness plus the public Claude Code, Codex and OpenCode ACP harnesses, while KAS
+remains an ACP runtime variant. The provider selector was not reintroduced; the harness
+choice is `agent.acp_backend`.
 See [`../features/claude-code-provider.md`](../features/claude-code-provider.md).
 
 ### LLMProvider ABC (`providers/base.py`)
@@ -73,16 +74,136 @@ Provider-agnostic event dataclass (aliased from `AcpEvent`):
 
 ### AcpProvider (`providers/acp.py`)
 
-The sole provider. Spawns a long-lived `kiro-cli acp --agent <name>` subprocess
-and speaks JSON-RPC 2.0 over stdio.
+The provider. Spawns a long-lived ACP subprocess for the selected harness and
+speaks JSON-RPC 2.0 over stdio.
 
-**Dormant backend seam:** `AcpProvider`/`AcpClient` retain an `acp_backend`
-parameter (`"" ` → kiro-cli; `"claude"` / `ACP_BACKEND_CLAUDE` → `claude-agent-acp`)
-so an internal companion can re-register a Claude backend over the same
-client. **The public provider factory only ever selects kiro-cli** — the claude
-branch is unreachable in this build. Its binary-resolution + config-isolation
-details live in [`acp-client.md`](acp-client.md); do not re-add the registration
-glue or a provider selector (see the repo-root `CLAUDE.md`).
+`acp_backend` selects Kiro (`""`), Claude (`"claude"`), Codex (`"codex"`),
+OpenCode (`"opencode"`), or KAS (`"kas"`). Kiro stays the default and first-class path; adapter spawn,
+protocol, model, and effort differences are explicit capability sets documented
+in [`acp-client.md`](acp-client.md). Do not re-add a second provider selector.
+
+**Harness choice is per chat session.** `_ChatSlot.acp_backend` carries it and
+`POST /api/chat/slots/{slot}/backend` sets it; the provider factory takes it as
+`acp_backend_override`, and `None` (no per-session pick) inherits
+`agent.acp_backend`. There is no provider control in Settings — the last switch
+a session made is written back to `agent.acp_backend` as the sticky default for
+NEW sessions, so stickiness inherits the normalization and governance floor that
+key already has rather than adding a second store.
+
+Three consequences the code depends on:
+
+- **No live switch.** A harness is a different subprocess with an incompatible
+  session id, so the endpoint always resets the slot and lets the existing
+  provider-switch path (`detect_provider_switch` → `build_session_replay`) carry
+  the conversation. Model and effort keep their live-switch behaviour — but only
+  while the live process is still the harness the slot selects.
+  `_live_harness_is_stale` compares both backend strings and refuses the
+  in-place `set_model` otherwise, because for a window after the switch the slot
+  names the NEW harness while the process is still the OLD one. Sending the pick
+  anyway asks the old harness for the new harness's id: picking Claude's
+  `sonnet` came back refused against Codex's `gpt-5.6-*` catalog, reported as an
+  account-entitlement problem that had nothing to do with the cause. The reset
+  respawns on the selected harness and applies the model where it means
+  something.
+- **The model pin is dropped in the same commit.** A model id is only meaningful
+  inside one harness's namespace (`acp_effective_model` translates per backend:
+  raw for a member of `ACP_BACKENDS_OWN_MODEL_CATALOG`, `to_acp_id` otherwise),
+  so carrying it across would pin an id the new harness cannot serve.
+- **The warm pool is bypassed** (`bypass_backend`) whenever the per-session pick
+  differs from the configured harness: the pool is pre-spawned from the
+  configured one, and claiming from it would hand the session a harness it did
+  not choose.
+
+`GET /api/models?slot=` scopes the advertised set to that session's harness;
+`?backend=<id>` names one outright (the Settings role pickers ask about
+harnesses no session may be running, so there is nothing to infer from) and wins
+over `?slot=`. With neither, the configured default answers.
+`GET /api/effort-levels` takes the same two parameters, for the same reason:
+effort ladders are per-harness (Codex has no `default` rung, Claude has one), so
+a static list offers levels one adapter refuses.
+
+### The cold picker: reading a catalog with no session
+
+Both endpoints must answer BEFORE a session exists, because that is the setup
+case — an operator choosing a harness, its default model and its effort level
+has by definition not opened a chat on it. kiro-cli answers from
+`kiro-cli chat --list-models` and OpenCode from `opencode models`; Claude and
+Codex have no catalog subcommand at all and report theirs only in `session/new`'s
+`configOptions`, so both controls were empty exactly while being configured.
+
+`acp/adapter_catalog.py` closes that: a full ACP handshake — spawn, `initialize`,
+`session/new`, read, tear down — driven through `AcpClient` rather than
+hand-rolled JSON-RPC, so it inherits the spawn path, sandbox posture, env
+scrubbing and teardown the chat session already uses and cannot drift from them.
+No prompt is sent, so no tokens are spent.
+
+Three properties are load-bearing, because this spawns a process:
+
+- **A live session always wins.** The probe runs only when the advertised list
+  is still just the `auto` sentinel. Probing past a live session would spawn a
+  second adapter to re-learn what the first one already reported.
+- **Cached with a TTL, and single-flighted per harness.** Entitlement changes on
+  a plan change, not on a page load, while the picker polls every 8s whenever it
+  is degraded — so without both, every poll would spawn an adapter and
+  concurrent pollers would spawn one each. A FAILED probe is cached far more
+  briefly (`FAILURE_TTL_SECONDS`): its common causes — adapter not installed,
+  not signed in — are the ones an operator fixes and immediately retries.
+- **It never raises.** Any failure yields an empty catalog and the picker shows
+  its `auto` sentinel, which is what it did before the probe existed. A
+  read-only picker must not 5xx because a harness is not set up yet.
+
+### Per-role harnesses
+
+`agent.role_backends` pins a harness per task class, with the same keys as
+`agent.role_models` (`background`, `subagent`) — the configuration this exists
+for is an expensive harness for interactive chat and a cheaper one for
+unattended work. `AgentConfig.resolve_backend(role)` is the reader.
+
+It differs from `resolve_model` in one deliberate way: **an unset role inherits
+`agent.acp_backend`.** A model has an `auto` sentinel the provider can resolve
+for itself; a harness does not, so the only sane "unset" is "the same one chat
+runs on". The role map therefore distinguishes an absent key (inherit) from an
+explicit `""` value (pin Kiro CLI): `""` is kiro-cli's real wire id, and dropping
+it would make it impossible to pin unattended work to Kiro when chat uses a
+different harness. The UI may present an absent value as "Same as chat"; the
+chat row and an explicit role pin spell `""` "Kiro CLI".
+
+`AgentConfig.resolve_model(role)` makes the complementary choice: an unset role
+resolves to `auto` inside its selected harness and never inherits `agent.model`.
+This keeps unattended work from silently following an interactive chat pin.
+
+Two spawn paths honour the pin, and a pin that does not reach one of them is
+decoration:
+
+- **Background** — `session_background._configured_bg_backend_raw()` resolves
+  the `background` role instead of reading `agent.acp_backend`. The existing
+  displacement machinery then applies for free: a `_bg` runtime whose backend no
+  longer matches is killed if idle and parked if it has live handles. The
+  provider-backed fallback receives the same resolved backend as
+  `acp_backend_override`, so an external role pin cannot silently fall back to
+  the chat harness; an already-cached provider-backed `_bg` session is retired
+  at an idle boundary before replacement.
+- **Sub-agents** — `subagent._subagent_default_backend(parent_backend)` resolves
+  the harness the sub-agent must run on: the `subagent` role pin, else the
+  PARENT SLOT's own per-session pick, else the chat default. It answers `None`
+  only when that lands on `agent.acp_backend`, because `None` means "omit the
+  kwarg" and omitting it is exactly what makes the factory read that key.
+  The comparison is therefore against `agent.acp_backend` and never against
+  `parent_backend`: the factory is told nothing else about the parent slot, so
+  measuring the parent against itself would answer `None` for a chat that moved
+  off the global default and spawn the sub-agent on a harness its parent is not
+  running. `subagent_manager/run.py` passes the answer as
+  `acp_backend_override`. A non-`None` answer also **disables session sharing**,
+  for a stronger version of the reason a model or effort override already does:
+  the parent's shared runtime is a different binary, not merely a different
+  model on the same one, so sharing it would run the sub-agent on the harness
+  the operator moved it off.
+
+Writes go through `agent.role_backends.<role>` in `_EDITABLE_CONFIG`, whose
+value list is `_selectable_role_backends()` — a straight delegation to
+`_selectable_acp_backends()` so a harness an edition registers reaches the role
+pins the moment it reaches the chat pin. A write refreshes session defaults, the
+same as a `role_efforts` write.
 
 **Key APIs:**
 - `start()` → `AcpClient.ensure_ready()` (spawns process, handshake, session/new)
@@ -103,7 +224,9 @@ glue or a provider selector (see the repo-root `CLAUDE.md`).
 - Applied via the **same** workspace `cli.json` overlay used for effort (`<work_dir>/.kiro/settings/cli.json`), written deterministically before every spawn and on each restart by `_write_tool_search_overlay` (called from `AcpProvider.__init__` and `start()`). When enabled it writes the flat keys `toolSearch.enabled=true` plus `toolSearch.minPct`/`toolSearch.minTokens`, taken from `agent.tool_search_min_pct` / `agent.tool_search_min_tokens` (defaults `5` / `50000`, mirroring kiro-cli's own thresholds; clamped to 0-100 and >= 0, non-numeric falls back to the default); when disabled it writes `toolSearch.enabled=false` and drops both thresholds.
 - **Why the thresholds are not forced to 0:** deferral costs a round-trip — a deferred tool's spec is absent from the model's tool list, so the first direct call fails with `A tool with the name '<name>' does not exist` and has to be recovered with `tool_search`. That only pays once the specs are genuinely large, which is what the thresholds express (kiro-cli defers when EITHER is exceeded). An earlier build hard-coded both to `0`, imposing the round-trip on every install including ones far below the threshold. Setting both to `0` still restores unconditional deferral for operators who want it. The thresholds are written **explicitly** rather than omitted, so a machine carrying the old forced zeros is actually migrated instead of silently keeping them.
 - Writing both `true` and `false` makes the KiroCrew toggle authoritative over any value in the user's global `~/.kiro/settings/cli.json`. The write is merge-safe with the effort `chat.modelDefaults` keys in the same file.
-- **claude backend** — no-op. Tool Search is a kiro-cli feature; `_apply_tool_search_overlay` returns early for the claude backend and when no toggle value was threaded in (`tool_search is None`).
+- **external adapters (Claude Code and Codex)** — no-op. Tool Search is a
+  kiro-cli feature; `_apply_tool_search_overlay` writes only for the
+  runtime-backed Kiro/KAS capability set.
 
 - **Resume guard:** `session/load` (resume) is only attempted when the prior session transcript exists on disk (`~/.kiro/sessions/cli/<sid>.json`). A stale persisted sid with no transcript falls back to `session/new`, preventing a fresh conversation from replaying old turns (which inflated base context).
 - **Working dir:** `AcpProvider.cwd` overrides the `LLMProvider` ABC default so `session_map` persists the real workspace path. AcpProvider's work_dir lives on the inner client (`_client._work_dir`), so the prior `getattr(provider, "_work_dir", "")` persisted `""` for all ACP sessions — `provider.cwd` fixes resume-cwd-override.
@@ -134,13 +257,22 @@ discoverable user- and project-scoped spec.
 
 ### MCP Server Registration
 
-MCP servers are passed directly in the `session/new` params. The two managed
-servers (`kirocrew-core`, `kirocrew-cron` — see `agent.py:_MANAGED_MCP_SERVERS`)
-are always present; user-configured servers from the agent config are merged in.
+Kiro CLI receives managed MCP servers from its rendered agent. Claude and Codex
+receive the always-emitted Crew servers through their ACP `session/new` and
+`session/load` requests. The external-adapter entries omit `autoApprove`, and
+Claude additionally disables its native `Agent`/`Task` tools and scopes explicit
+`ask` rules to Crew MCP names so Crew's `spawn_run` path is used and each call
+reaches ACP permission handling.
+
+MCP servers are passed directly in the `session/new` params. Kiro's rendered agent
+also merges user-configured servers. External adapters receive the two managed
+servers (`kirocrew-core`, `kirocrew-cron` — see `agent.py:_MANAGED_MCP_SERVERS`);
+user-configured servers remain an edition-owned seam and are not copied into those
+sessions.
 
 ### SessionManager (`session.py`)
 
-- Provider-agnostic via factory (one provider: kiro-cli `AcpProvider`)
+- Provider-agnostic via factory (one provider: `AcpProvider` with a selected harness)
 - Calls `repair_agent_configs()` on gateway startup and periodically
 - context_info() reports model/agent
 - Resume: calls `set_resume_session_id()` before `start()`
@@ -167,8 +299,10 @@ A transient 5xx that arrives *after* the turn already emitted output (the `_turn
 
 ### Installation
 
-KiroCrew drives `kiro-cli` over ACP — install it per its own docs, ensure it is
-on `PATH`, and run `kiro-cli login`. `kirocrew doctor` reports its status.
+Kiro uses `kiro-cli` over ACP — install it per its own docs, ensure it is on
+`PATH`, and run `kiro-cli login`. Claude Code and Codex use their respective ACP
+adapters and authentication. `kirocrew doctor` reports the availability of all
+selectable harnesses.
 
 
 ## AcpProvider: shared-runtime startup
@@ -178,7 +312,7 @@ enters the same `AcpRuntime.spawn()` cold-start coordinator (default 2 concurren
 spawn+initialize handshakes per gateway loop); admission is backend-neutral, so an
 adapted runtime harness neither bypasses the bound nor changes the Kiro path.
 
-- **kiro (`is_claude_backend` False)** → `_start_kiro_runtime()`. This spawns an
+- **Kiro/KAS (`ACP_BACKENDS_ACP_RUNTIME`)** → `_start_kiro_runtime()`. This spawns an
   `AcpRuntime` (carrying the provider's sandbox mode, extra env, and MCP-gateway
   overlay/socket), resumes via `runtime.load_session()` when a prior transcript
   exists or otherwise `runtime.create_session()`, applies the configured model,
@@ -186,7 +320,8 @@ adapted runtime harness neither bypasses the bound nor changes the Kiro path.
   same interface as `AcpClient`, so downstream callers are unchanged). Any
   failure after `spawn()` kills the runtime so a half-initialised session never
   leaks an orphaned `kiro-cli`.
-- **Alternate ACP backend (`is_claude_backend` True)** → legacy `AcpClient.ensure_ready()`.
+- **Claude Code/Codex (`ACP_BACKENDS_CONFIG_MODEL`)** → legacy
+  `AcpClient.ensure_ready()`.
 
 `AcpProvider.is_session_sharing_eligible` is membership in
 `ACP_BACKENDS_SESSION_SHARING` (harness-parity H6), not `not is_claude_backend`:

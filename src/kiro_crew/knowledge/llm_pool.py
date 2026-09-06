@@ -4,6 +4,7 @@ Provider-agnostic bounded pool of long-lived workers (CC or ACP).
 Knowledge extraction and URL fetch use separate instances of this pool so their
 workload policies and session state remain isolated.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -16,6 +17,13 @@ from abc import ABC, abstractmethod
 from typing import Optional
 
 from kiro_crew import platform_compat
+from kiro_crew.acp_backends import (
+    ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_CODEX,
+    ACP_BACKEND_KIRO,
+    ACP_BACKENDS_CONFIG_MODEL,
+    ACP_BACKENDS_KNOWN,
+)
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
 from kiro_crew.config.paths import config_dir
 from kiro_crew.effort import EFFORT_LEVELS, is_valid_effort
@@ -42,11 +50,13 @@ except ImportError:
 try:
     from kiro_crew.session_pid import register_protected_pid, unregister_protected_pid
 except Exception:  # pragma: no cover - standalone / test fallback
+
     def register_protected_pid(pid: int) -> None:  # type: ignore[misc]
         return None
 
     def unregister_protected_pid(pid: int) -> None:  # type: ignore[misc]
         return None
+
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +142,34 @@ def _get_provider_type(config: Optional[dict] = None) -> str:
     return provider if isinstance(provider, str) and provider else "acp"
 
 
+def _get_acp_backend(config: Optional[dict] = None) -> str:
+    """Return the configured ACP harness for knowledge workers.
+
+    ``agent.provider`` is intentionally fixed to the public ACP seam, so a
+    knowledge pool must read the harness selector separately. Unknown or
+    malformed values fall back to Kiro's first-class backend, matching config
+    loading and keeping a hand-edited file from silently selecting a foreign
+    process.
+    """
+    data = _read_config() if config is None else config
+    backend = _section(data, "agent").get("acp_backend", ACP_BACKEND_KIRO)
+    return (
+        backend if isinstance(backend, str) and backend in ACP_BACKENDS_KNOWN else ACP_BACKEND_KIRO
+    )
+
+
+def _get_extraction_model(config: Optional[dict] = None) -> str:
+    """Return the explicitly configured knowledge model, or the Auto sentinel."""
+    data = _read_config() if config is None else config
+    knowledge = _section(data, "knowledge")
+    value = knowledge.get("extraction_model")
+    if not isinstance(value, str) or not value.strip():
+        value = _section(data, "agent").get("model")
+    if not isinstance(value, str) or not value.strip():
+        return "auto"
+    return value.strip()
+
+
 def _get_sandbox_mode(config: Optional[dict] = None) -> str:
     """OS-level sandbox mode for knowledge-worker subprocesses.
 
@@ -165,9 +203,7 @@ def _get_idle_ttl(config: Optional[dict] = None) -> float:
     value falls back to the default rather than silently disabling the reaper.
     """
     data = _read_config() if config is None else config
-    value = _section(data, "knowledge").get(
-        "pool_idle_ttl_secs", DEFAULT_IDLE_TTL_SECS
-    )
+    value = _section(data, "knowledge").get("pool_idle_ttl_secs", DEFAULT_IDLE_TTL_SECS)
     if isinstance(value, bool):
         return DEFAULT_IDLE_TTL_SECS
     if isinstance(value, (int, float)) and value >= 0:
@@ -181,9 +217,7 @@ def _get_pool_size(config: Optional[dict] = None) -> int:
     Reads ``knowledge.extraction_pool_size`` (default 3, clamped 1–10).
     """
     data = _read_config() if config is None else config
-    value = _section(data, "knowledge").get(
-        "extraction_pool_size", DEFAULT_POOL_SIZE
-    )
+    value = _section(data, "knowledge").get("extraction_pool_size", DEFAULT_POOL_SIZE)
     if isinstance(value, bool):
         return DEFAULT_POOL_SIZE
     if isinstance(value, int) and 1 <= value <= 10:
@@ -204,8 +238,7 @@ def _normalize_effort(value: object) -> Optional[str]:
 def _select_effort_level(requested: str, supported: list[str]) -> Optional[str]:
     """Select the highest advertised effort no higher than ``requested``."""
     supported_levels = {
-        level for level in supported
-        if isinstance(level, str) and is_valid_effort(level)
+        level for level in supported if isinstance(level, str) and is_valid_effort(level)
     }
     if not supported_levels:
         # An advertised option without a usable level is treated like a lazy
@@ -213,7 +246,8 @@ def _select_effort_level(requested: str, supported: list[str]) -> Optional[str]:
         return requested
     requested_index = EFFORT_LEVELS.index(requested)
     eligible = [
-        level for level in EFFORT_LEVELS
+        level
+        for level in EFFORT_LEVELS
         if level in supported_levels and EFFORT_LEVELS.index(level) <= requested_index
     ]
     return eligible[-1] if eligible else None
@@ -270,12 +304,16 @@ class AcpWorker(Worker):
         *,
         sandbox_mode: Optional[str] = None,
         effort: Optional[str] = None,
+        model: Optional[str] = None,
+        acp_backend: str = ACP_BACKEND_KIRO,
     ) -> None:
         self._client: Optional[AcpClient] = None
         # Pre-resolved by the caller (off the event loop). ``None`` -> resolve
         # lazily in ``start`` (direct construction outside the pool / tests).
         self._sandbox_mode = sandbox_mode
         self._effort = _normalize_effort(effort)
+        self._model = model
+        self._acp_backend = acp_backend
         self._effective_effort: Optional[str] = None
         # PID currently shielded from the gateway orphan sweep (see module note).
         self._protected_pid: Optional[int] = None
@@ -307,7 +345,11 @@ class AcpWorker(Worker):
         )
         logger.info("AcpWorker: starting with agent=%s", AGENT_NAME)
         self._client = AcpClient(
-            agent=AGENT_NAME, sandbox_mode=sandbox_mode, audit_source="subagent"
+            agent=AGENT_NAME,
+            model=self._model,
+            sandbox_mode=sandbox_mode,
+            acp_backend=self._acp_backend,
+            audit_source="subagent",
         )
         self._effective_effort = None
         await self._client.ensure_ready()
@@ -320,7 +362,11 @@ class AcpWorker(Worker):
             register_protected_pid(pid)
         else:
             self._protected_pid = None
-        logger.info("AcpWorker: ready (agent=%s, pid=%s)", AGENT_NAME, getattr(self._client, '_pid', 'unknown'))
+        logger.info(
+            "AcpWorker: ready (agent=%s, pid=%s)",
+            AGENT_NAME,
+            getattr(self._client, "_pid", "unknown"),
+        )
 
     async def _apply_effort(self) -> None:
         """Apply the requested effort without breaking provider-default fallback."""
@@ -329,8 +375,12 @@ class AcpWorker(Worker):
         if client is None or requested is None:
             return
         try:
-            is_claude = bool(getattr(client, "_is_claude", False))
-            if is_claude and not client.supports_config_option("effort"):
+            backend = getattr(client, "backend", "")
+            is_adapter = bool(getattr(client, "_is_claude", False)) or backend in (
+                ACP_BACKEND_CLAUDE,
+                ACP_BACKEND_CODEX,
+            )
+            if is_adapter and not client.supports_config_option("effort"):
                 logger.warning(
                     "AcpWorker: effort=%s unsupported; using provider default",
                     requested,
@@ -342,12 +392,11 @@ class AcpWorker(Worker):
             effective = _select_effort_level(requested, supported)
             if effective is None:
                 logger.warning(
-                    "AcpWorker: no supported effort at or below %s; "
-                    "using provider default",
+                    "AcpWorker: no supported effort at or below %s; " "using provider default",
                     requested,
                 )
                 return
-            if is_claude:
+            if is_adapter:
                 await client.set_config_option("effort", effective)
             else:
                 await client.send_command("/effort", args={"level": effective})
@@ -438,10 +487,14 @@ class CCWorker(Worker):
             self._claude_bin,
             "-p",
             "--verbose",
-            "--model", "haiku",
-            "--input-format", "stream-json",
-            "--output-format", "stream-json",
-            "--permission-mode", "bypassPermissions",
+            "--model",
+            "haiku",
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "stream-json",
+            "--permission-mode",
+            "bypassPermissions",
         ]
         # Optional URL-fetch tool. Empty by default (no built-in remote fetch on a
         # vanilla machine). Users can opt in by setting KIROCREW_KNOWLEDGE_FETCH_TOOLS
@@ -502,10 +555,7 @@ class CCWorker(Worker):
             await self._spawn()
         assert self._proc is not None and self._proc.stdin is not None
 
-        msg = json.dumps({
-            "type": "user",
-            "message": {"role": "user", "content": prompt}
-        })
+        msg = json.dumps({"type": "user", "message": {"role": "user", "content": prompt}})
         self._proc.stdin.write((msg + "\n").encode())
         await self._proc.stdin.drain()
 
@@ -593,6 +643,8 @@ class LLMPool:
         self._available: asyncio.Queue[int] = asyncio.Queue()
         self._started = False
         self._provider_type: str = ""
+        self._acp_backend: str = ACP_BACKEND_KIRO
+        self._model: str = "auto"
         self._sandbox_mode: str = "auto"
         self._config: dict = {}
         self._start_lock = asyncio.Lock()
@@ -620,19 +672,16 @@ class LLMPool:
             # Read config once, off the event loop, and reuse for every worker.
             config = await asyncio.to_thread(_read_config)
             self._provider_type = _get_provider_type(config)
+            self._acp_backend = _get_acp_backend(config)
+            self._model = _get_extraction_model(config)
             self._sandbox_mode = _get_sandbox_mode(config)
             # Allow config to override pool size (knowledge.extraction_pool_size).
             # Only applies when the key is explicitly set in config (not the
             # fallback default), so callers that pass a specific pool_size to the
             # constructor are not overridden.
             configured_size = _get_pool_size(config)
-            explicit = "extraction_pool_size" in (_section(
-                config, "knowledge") if config else {})
-            if (
-                self._use_config_pool_size
-                and explicit
-                and configured_size != self._pool_size
-            ):
+            explicit = "extraction_pool_size" in (_section(config, "knowledge") if config else {})
+            if self._use_config_pool_size and explicit and configured_size != self._pool_size:
                 self._pool_size = configured_size
                 self._semaphore = asyncio.Semaphore(configured_size)
             self._idle_ttl = _get_idle_ttl(config)
@@ -657,19 +706,31 @@ class LLMPool:
             if self._idle_ttl > 0 and self._reaper_task is None:
                 self._reaper_task = asyncio.create_task(self._idle_reaper())
             logger.info(
-                "LLMPool started: %d workers, provider=%s",
-                self._pool_size, self._provider_type,
+                "LLMPool started: %d workers, provider=%s backend=%s model=%s",
+                self._pool_size,
+                self._provider_type,
+                self._acp_backend,
+                self._model,
             )
 
     async def _create_worker(self) -> Worker:
         """Create and start a new worker based on provider type."""
         if is_claude_code(self._provider_type):
             worker: Worker = CCWorker()
-        else:
+        elif self._acp_backend in ACP_BACKENDS_CONFIG_MODEL:
+            # External adapters do not read Kiro agent JSON, so pass the
+            # selected harness and extraction model directly to their client.
             worker = AcpWorker(
                 sandbox_mode=self._sandbox_mode,
                 effort=self._effort,
+                model=self._model,
+                acp_backend=self._acp_backend,
             )
+        else:
+            # Keep the historical Kiro call shape for compatibility with
+            # embedders and tests; Kiro resolves the agent/model from its own
+            # installed agent specification.
+            worker = AcpWorker(sandbox_mode=self._sandbox_mode, effort=self._effort)
         await worker.start()
         return worker
 
@@ -799,7 +860,8 @@ class LLMPool:
             self._reaping_workers = None
         logger.info(
             "LLMPool: scaled to zero after %.0fs idle (%d workers freed)",
-            self._idle_ttl, len(workers),
+            self._idle_ttl,
+            len(workers),
         )
         return True
 
@@ -844,8 +906,9 @@ class LLMPool:
             await worker.reset_conversation()
         except Exception:
             logger.warning(
-                "LLMPool: worker %d conversation reset failed; will be replaced on "
-                "next acquire", idx, exc_info=True,
+                "LLMPool: worker %d conversation reset failed; will be replaced on " "next acquire",
+                idx,
+                exc_info=True,
             )
 
     async def send_batch(self, prompts: list[str], timeout: float = DEFAULT_TIMEOUT) -> list[str]:

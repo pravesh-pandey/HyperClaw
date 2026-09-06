@@ -2,13 +2,15 @@ import { useState, useCallback, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { SettingsSection, SettingsCard, SettingsToggle, SettingsSelect, SettingsInput, SettingsButtonGroup } from '../../components/settings'
 import { loadChatConfig, saveChatConfig, type ChatConfig, type ContentWidth, type DashboardConfig, type SendMode } from '../chat/ChatSettings'
-import { api } from '../../api/client'
+import { api, type AcpBackendResponse } from '../../api/client'
 import { useOptimisticConfigPaths, setConfigPathValue } from './useOptimisticConfigPaths'
-import { useAvailableModels } from '../../hooks/useAvailableModels'
-import { EFFORT_LEVELS, effortLabel, modelSupportsEffort } from '../../lib/effort'
+import { useAvailableModels, useAvailableModelsQuery } from '../../hooks/useAvailableModels'
+import { useEffortLevels } from '../../hooks/useEffortLevels'
+import { effortLabel, modelSupportsEffort } from '../../lib/effort'
 import { isMac } from '../../utils/platform'
 import { capRoleOther, clampRoleOther } from '../../lib/userProfile'
 import { ROLE_SLUGS, TECH_SLUGS } from '../../lib/profileOptions'
+import { AcpBackendIcon, acpBackendLabel, reportsOwnEffortLadder } from '../../components/AcpBackend'
 
 import { i18nT } from '../../i18n/t'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -96,12 +98,18 @@ const COMPLETION_KEEP_CHARS_MIN = 0
 const COMPLETION_KEEP_CHARS_MAX = 512000
 const COMPLETION_KEEP_CHARS_DEFAULT = 3000
 
+/** UI-only value for an omitted role backend. The ACP wire id `''` is Kiro CLI,
+ * so it must remain available as a real, explicit selection. */
+const INHERIT_BACKEND = '__inherit_chat_backend__'
+
 /** Shape of the kirocrewConfig query payload this panel reads and patches. */
 type KirocrewConfigShape = {
   session?: { autocompact_pct?: number }
   session_summary?: { enabled?: boolean }
   agent?: {
     model?: string
+    acp_backend?: string | null
+    role_backends?: { background?: string | null; subagent?: string | null }
     role_models?: { background?: string; subagent?: string }
     role_efforts?: { background?: string; subagent?: string }
     reasoning_effort?: string
@@ -111,6 +119,23 @@ type KirocrewConfigShape = {
     fallback_model?: string
   }
   dashboard?: { user_role?: string; user_role_other?: string; user_technical_level?: string; prevent_sleep?: boolean }
+}
+
+/** Mirror the backend's atomic model reset if a provider-save refetch fails. */
+function configAfterPickerSave(config: KirocrewConfigShape, path: string, value: string | null) {
+  let next = setConfigPathValue(config, path, value)
+  if (path !== 'agent.acp_backend' && !path.startsWith('agent.role_backends.')) return next
+  const previousChat = config.agent?.acp_backend ?? ''
+  const nextChat = next.agent?.acp_backend ?? ''
+  if (previousChat !== nextChat) next = setConfigPathValue(next, 'agent.model', 'auto')
+  for (const role of ['background', 'subagent'] as const) {
+    const previousBackend = config.agent?.role_backends?.[role] ?? previousChat
+    const nextBackend = next.agent?.role_backends?.[role] ?? nextChat
+    if (previousBackend !== nextBackend) {
+      next = setConfigPathValue(next, `agent.role_models.${role}`, 'auto')
+    }
+  }
+  return next
 }
 
 export function ChatPanel() {
@@ -215,6 +240,35 @@ export function ChatPanel() {
   })
   const mcCfg = mcQ.data
 
+  const acpBackendsQ = useQuery<AcpBackendResponse>({
+    queryKey: ['acp-backends'],
+    queryFn: () => api.acpBackends(),
+    retry: false,
+  })
+  const selectableBackends = acpBackendsQ.data?.backends.filter(row => row.selectable) ?? []
+  const configuredBackend = acpBackendsQ.data?.configured ?? ''
+  const configuredChatBackend = mcCfg?.agent?.acp_backend ?? configuredBackend
+  const chatBackend = overlay.shown('agent.acp_backend', configuredChatBackend)
+  // An omitted/null role key means inheritance. Keep it distinct from the
+  // empty-string ACP id, which explicitly selects Kiro CLI.
+  const backgroundBackend = mcCfg?.agent?.role_backends?.background ?? INHERIT_BACKEND
+  const subagentBackend = mcCfg?.agent?.role_backends?.subagent ?? INHERIT_BACKEND
+  const shownBackgroundBackend = overlay.shown('agent.role_backends.background', backgroundBackend)
+  const shownSubagentBackend = overlay.shown('agent.role_backends.subagent', subagentBackend)
+  const resolvedBackgroundBackend = shownBackgroundBackend === INHERIT_BACKEND ? chatBackend : shownBackgroundBackend
+  const resolvedSubagentBackend = shownSubagentBackend === INHERIT_BACKEND ? chatBackend : shownSubagentBackend
+
+  const providerOptions = (value: string, role: boolean): string[] => {
+    const options = selectableBackends.map(row => row.id)
+    if (role) options.unshift(INHERIT_BACKEND)
+    if (!options.includes(value)) options.unshift(value)
+    return options.length > 0 ? options : [value]
+  }
+  const providerLabels = (options: string[]): string[] =>
+    options.map(value => value === INHERIT_BACKEND
+      ? i18nT('components.modelEffortDropdown.same_as_chat')
+      : acpBackendLabel(value))
+
   /**
    * Mutation options for a config PATCH with an OPTIMISTIC display: the seven
    * Model-section selectors render `shown(path, server)`, so a pick shows
@@ -232,12 +286,12 @@ export function ChatPanel() {
    * value that did persist is exactly the co-render this prevents.
    */
   const optimisticConfigOpts = (path: string, errMsg: (err: unknown) => string) =>
-    overlay.mutationOpts<string>({
+    overlay.mutationOpts<string | null>({
       queryKey: ['kirocrewConfig'],
-      mutationFn: (v: string) => api.patchConfig(path, v),
+      mutationFn: (v: string | null) => api.patchConfig(path, v),
       path: () => path,
       displayValue: v => v,
-      applyToCache: (cached, v) => setConfigPathValue(cached as KirocrewConfigShape, path, v),
+      applyToCache: (cached, v) => configAfterPickerSave(cached as KirocrewConfigShape, path, v),
       onFailure: err => setPathSaveError(path, errMsg(err)),
       onSupersede: clearOwnPathError,
     })
@@ -377,7 +431,7 @@ export function ChatPanel() {
   // These are the DEFAULTS for new sessions. A session's own model/effort
   // picker still overrides them per-slot; nothing here touches live sessions.
   // Same query key as every other model picker so the list is fetched once.
-  const availableModels = useAvailableModels()
+  const availableModels = useAvailableModels({ backend: chatBackend })
   // '' in config means "unset" and resolves the same way 'auto' does, so both
   // render as the 'auto' option rather than as a missing selection.
   const defaultModel = mcCfg?.agent?.model || 'auto'
@@ -404,7 +458,25 @@ export function ChatPanel() {
   // disabled with an explanatory hint. Gated on the SHOWN model so the row's
   // enabled state tracks the trigger the user is looking at, not a value the
   // refetch has yet to replace.
-  const effortSupported = modelSupportsEffort(shownDefaultModel)
+  // The harness's own ladder, not a static list: levels differ per adapter, and
+  // asking about the SELECTED provider is the only way a control configured
+  // before any session exists can offer what that adapter accepts.
+  const chatEffortLevels = useEffortLevels({ backend: chatBackend })
+  // `modelSupportsEffort` answers false for 'auto', which is every freshly
+  // picked provider's model — that alone hid the control exactly when it was
+  // being configured. A harness that REPORTS a ladder supports effort on
+  // whatever it resolves Auto to, so the live answer wins and the static
+  // heuristic only decides for a concrete model the harness said nothing about.
+  //
+  // Scoped to the adapters on purpose. Kiro resolves Auto to a model only at
+  // session start, so "can this reason?" is genuinely unknown there and the
+  // conservative gate stays; an adapter that reports a ladder has already
+  // answered it for whatever it resolves Auto to.
+  const supportsEffort = (model: string, levels: string[], backend: string): boolean =>
+    (!model || model === 'auto')
+      ? reportsOwnEffortLadder(backend) && levels.length > 0
+      : modelSupportsEffort(model)
+  const effortSupported = supportsEffort(shownDefaultModel, chatEffortLevels, chatBackend)
   const defaultEffortMut = useMutation(
     optimisticConfigOpts('agent.reasoning_effort', () =>
       i18nT('pages.settings.chatPanel.failed_to_save_default_reasoning_effort')
@@ -422,12 +494,16 @@ export function ChatPanel() {
   const subagentModel = mcCfg?.agent?.role_models?.subagent || 'auto'
   const shownBackgroundModel = overlay.shown('agent.role_models.background', backgroundModel)
   const shownSubagentModel = overlay.shown('agent.role_models.subagent', subagentModel)
+  const backgroundModelsQ = useAvailableModelsQuery({ backend: resolvedBackgroundBackend })
+  const subagentModelsQ = useAvailableModelsQuery({ backend: resolvedSubagentBackend })
+  const backgroundAvailableModels = backgroundModelsQ.data ?? [{ name: 'auto' }]
+  const subagentAvailableModels = subagentModelsQ.data ?? [{ name: 'auto' }]
   // A pinned model the live backend no longer advertises must stay selectable
   // (same reasoning as the chat-default picker), so prepend what is missing —
   // both the shown value and the persisted one, so neither vanishes while a
   // pick is in flight.
-  const roleModelOptions = (shown: string, server: string): string[] => {
-    const opts = availableModels.map(m => m.name)
+  const roleModelOptions = (shown: string, server: string, source: { name: string }[]): string[] => {
+    const opts = source.map(m => m.name)
     for (const kept of [server, shown]) {
       if (!opts.includes(kept)) opts.unshift(kept)
     }
@@ -437,8 +513,8 @@ export function ChatPanel() {
     opts.map(m => (m === 'auto' ? i18nT('pages.settings.chatPanel.role_model_auto') : m))
   // One array per row, shared by `options` and `optionLabels`: SettingsSelect
   // pairs a label to a value by INDEX, so both props must read the same list.
-  const backgroundModelOpts = roleModelOptions(shownBackgroundModel, backgroundModel)
-  const subagentModelOpts = roleModelOptions(shownSubagentModel, subagentModel)
+  const backgroundModelOpts = roleModelOptions(shownBackgroundModel, backgroundModel, backgroundAvailableModels)
+  const subagentModelOpts = roleModelOptions(shownSubagentModel, subagentModel, subagentAvailableModels)
   const fallbackOpts = fallbackModelOptions(shownFallbackModel, fallbackModel)
   const backgroundModelMut = useMutation(
     optimisticConfigOpts('agent.role_models.background', () => i18nT('pages.settings.chatPanel.failed_to_save_role_model'))
@@ -447,29 +523,54 @@ export function ChatPanel() {
     optimisticConfigOpts('agent.role_models.subagent', () => i18nT('pages.settings.chatPanel.failed_to_save_role_model'))
   )
 
+  const backgroundBackendMut = useMutation(
+    optimisticConfigOpts('agent.role_backends.background', () => i18nT('pages.settings.chatPanel.failed_to_save_provider'))
+  )
+  const subagentBackendMut = useMutation(
+    optimisticConfigOpts('agent.role_backends.subagent', () => i18nT('pages.settings.chatPanel.failed_to_save_provider'))
+  )
+  const chatBackendMut = useMutation(
+    optimisticConfigOpts('agent.acp_backend', () => i18nT('pages.settings.chatPanel.failed_to_save_provider'))
+  )
+
   // Per-role reasoning effort, paired with each role's model. Empty inherits the
-  // the MODEL's own default: `RoleModels.resolve_effort` does not fall back to
-  // `agent.reasoning_effort` either. The effort row is only meaningful on a
-  // reasoning-capable model, so it disables against a resolved model.
-  //
-  // KNOWN GAP: the two gates below resolve `auto` to the CHAT default, which
-  // `resolve_model` never does — so a role on auto can offer an effort control
-  // for a model that role will not run on. Changing it is a behaviour change
-  // with a test asserting the current answer, so it is tracked separately
-  // rather than folded into this copy fix.
+  // model's own default. A role on Auto resolves within its own harness, so the
+  // chat model cannot decide whether that role supports effort.
   const backgroundEffort = mcCfg?.agent?.role_efforts?.background ?? ''
   const subagentEffort = mcCfg?.agent?.role_efforts?.subagent ?? ''
   const shownBackgroundEffort = overlay.shown('agent.role_efforts.background', backgroundEffort)
   const shownSubagentEffort = overlay.shown('agent.role_efforts.subagent', subagentEffort)
-  const bgEffortSupported = modelSupportsEffort(shownBackgroundModel !== 'auto' ? shownBackgroundModel : shownDefaultModel)
-  const subEffortSupported = modelSupportsEffort(shownSubagentModel !== 'auto' ? shownSubagentModel : shownDefaultModel)
-  const effortLabels = EFFORT_LEVELS.map(l => (l === '' ? i18nT('pages.settings.chatPanel.model_default') : effortLabel(l)))
+  const backgroundEffortLevels = useEffortLevels({ backend: resolvedBackgroundBackend })
+  const subagentEffortLevels = useEffortLevels({ backend: resolvedSubagentBackend })
+  const bgEffortSupported = supportsEffort(
+    shownBackgroundModel,
+    backgroundEffortLevels, resolvedBackgroundBackend)
+  const subEffortSupported = supportsEffort(
+    shownSubagentModel,
+    subagentEffortLevels, resolvedSubagentBackend)
+  // '' is the "let the model pick" sentinel and is never reported by a harness,
+  // so it is prepended here rather than expected back from the ladder.
+  const effortOptions = (levels: string[]): string[] => ['', ...levels.filter(l => l !== '')]
+  const effortLabelsFor = (options: string[]): string[] =>
+    options.map(l => (l === '' ? i18nT('pages.settings.chatPanel.model_default') : effortLabel(l)))
+  const chatEffortOpts = effortOptions(chatEffortLevels)
+  const backgroundEffortOpts = effortOptions(backgroundEffortLevels)
+  const subagentEffortOpts = effortOptions(subagentEffortLevels)
   const backgroundEffortMut = useMutation(
     optimisticConfigOpts('agent.role_efforts.background', () => i18nT('pages.settings.chatPanel.failed_to_save_role_effort'))
   )
   const subagentEffortMut = useMutation(
     optimisticConfigOpts('agent.role_efforts.subagent', () => i18nT('pages.settings.chatPanel.failed_to_save_role_effort'))
   )
+
+  // Provider writes clear model pins atomically on the server. Keep dependent
+  // picks inert through that write and its refetch so a model from the new
+  // catalog cannot race validation against the previous provider or be erased
+  // by its reset. No follow-up model PATCH is needed.
+  const backendSaving = chatBackendMut.isPending || backgroundBackendMut.isPending || subagentBackendMut.isPending
+  const providerPickDisabled = !mcQ.isSuccess || !acpBackendsQ.isSuccess || backendSaving
+    || defaultModelMut.isPending || backgroundModelMut.isPending || subagentModelMut.isPending
+    || defaultEffortMut.isPending || backgroundEffortMut.isPending || subagentEffortMut.isPending
 
   // ── Local chat config (localStorage) ──
   const setChat = useCallback(<K extends keyof ChatConfig>(k: K, v: ChatConfig[K]) => {
@@ -505,10 +606,24 @@ export function ChatPanel() {
       <SettingsSection title={i18nT('pages.settings.chatPanel.model')}>
         {/* Grouped by role so each block reads as "which model + how hard it
             thinks" for one kind of work, rather than six stacked selects.
-            Chat is the interactive default; Background and Sub-agents inherit it
-            when left on Auto. */}
+            Chat is the interactive default; Background and Sub-agents defer to
+            their selected provider when left on Auto. */}
         <SettingsCard>
           <div className="text-[13px] font-semibold text-text-strong">{i18nT('pages.settings.chatPanel.role_chat')}</div>
+          <div className="flex items-start gap-2">
+            <span className="mt-8 shrink-0 text-muted" aria-hidden="true"><AcpBackendIcon id={chatBackend} /></span>
+            <div className="min-w-0 flex-1">
+              <SettingsSelect
+                label={i18nT('components.modelEffortDropdown.provider')}
+                value={chatBackend}
+                options={providerOptions(chatBackend, false)}
+                optionLabels={providerLabels(providerOptions(chatBackend, false))}
+                onChange={v => chatBackendMut.mutate(v)}
+                disabled={providerPickDisabled}
+                configKey="agent.acp_backend"
+              />
+            </div>
+          </div>
           <SettingsSelect
             label={i18nT('pages.settings.chatPanel.default_model')}
             description={i18nT('pages.settings.chatPanel.which_model_new_sessions_start_with_pick_a_model')}
@@ -517,7 +632,7 @@ export function ChatPanel() {
             options={modelOptions}
             optionLabels={modelOptions.map(m => (m === 'auto' ? i18nT('pages.settings.chatPanel.default_auto') : m))}
             onChange={v => defaultModelMut.mutate(v)}
-            disabled={!mcQ.isSuccess}
+            disabled={!mcQ.isSuccess || backendSaving}
           />
           <SettingsSelect
             label={i18nT('pages.settings.chatPanel.default_reasoning_effort')}
@@ -528,16 +643,30 @@ export function ChatPanel() {
                 : i18nT('pages.settings.chatPanel.effort_needs_reasoning_model')
             }
             value={shownDefaultEffort}
-            options={[...EFFORT_LEVELS]}
-            optionLabels={effortLabels}
+            options={chatEffortOpts}
+            optionLabels={effortLabelsFor(chatEffortOpts)}
             onChange={v => defaultEffortMut.mutate(v)}
-            disabled={!mcQ.isSuccess || !effortSupported}
+            disabled={!mcQ.isSuccess || backendSaving || !effortSupported}
           />
         </SettingsCard>
 
         <SettingsCard index={1}>
           <div className="text-[13px] font-semibold text-text-strong">{i18nT('pages.settings.chatPanel.role_background')}</div>
           <div className="text-[12px] text-muted -mt-0.5">{i18nT('pages.settings.chatPanel.model_for_background_lite_heartbeat_work')}</div>
+          <div className="flex items-start gap-2">
+            <span className="mt-8 shrink-0 text-muted" aria-hidden="true"><AcpBackendIcon id={resolvedBackgroundBackend} /></span>
+            <div className="min-w-0 flex-1">
+              <SettingsSelect
+                label={i18nT('components.modelEffortDropdown.provider')}
+                value={shownBackgroundBackend}
+                options={providerOptions(shownBackgroundBackend, true)}
+                optionLabels={providerLabels(providerOptions(shownBackgroundBackend, true))}
+                onChange={v => backgroundBackendMut.mutate(v === INHERIT_BACKEND ? null : v)}
+                disabled={providerPickDisabled}
+                configKey="agent.role_backends.background"
+              />
+            </div>
+          </div>
           <SettingsSelect
             label={i18nT('pages.settings.chatPanel.background_model')}
             hint={i18nT('pages.settings.chatPanel.role_model_auto_hint')}
@@ -545,22 +674,36 @@ export function ChatPanel() {
             options={backgroundModelOpts}
             optionLabels={roleModelLabels(backgroundModelOpts)}
             onChange={v => backgroundModelMut.mutate(v)}
-            disabled={!mcQ.isSuccess}
+            disabled={!mcQ.isSuccess || backendSaving}
           />
           <SettingsSelect
             label={i18nT('pages.settings.chatPanel.background_effort')}
             hint={i18nT('pages.settings.chatPanel.role_effort_hint')}
             value={shownBackgroundEffort}
-            options={[...EFFORT_LEVELS]}
-            optionLabels={effortLabels}
+            options={backgroundEffortOpts}
+            optionLabels={effortLabelsFor(backgroundEffortOpts)}
             onChange={v => backgroundEffortMut.mutate(v)}
-            disabled={!mcQ.isSuccess || !bgEffortSupported}
+            disabled={!mcQ.isSuccess || backendSaving || !bgEffortSupported}
           />
         </SettingsCard>
 
         <SettingsCard index={2}>
           <div className="text-[13px] font-semibold text-text-strong">{i18nT('pages.settings.chatPanel.role_subagents')}</div>
           <div className="text-[12px] text-muted -mt-0.5">{i18nT('pages.settings.chatPanel.model_for_spawned_sub_agents')}</div>
+          <div className="flex items-start gap-2">
+            <span className="mt-8 shrink-0 text-muted" aria-hidden="true"><AcpBackendIcon id={resolvedSubagentBackend} /></span>
+            <div className="min-w-0 flex-1">
+              <SettingsSelect
+                label={i18nT('components.modelEffortDropdown.provider')}
+                value={shownSubagentBackend}
+                options={providerOptions(shownSubagentBackend, true)}
+                optionLabels={providerLabels(providerOptions(shownSubagentBackend, true))}
+                onChange={v => subagentBackendMut.mutate(v === INHERIT_BACKEND ? null : v)}
+                disabled={providerPickDisabled}
+                configKey="agent.role_backends.subagent"
+              />
+            </div>
+          </div>
           <SettingsSelect
             label={i18nT('pages.settings.chatPanel.subagent_model')}
             hint={i18nT('pages.settings.chatPanel.role_model_auto_hint')}
@@ -568,16 +711,16 @@ export function ChatPanel() {
             options={subagentModelOpts}
             optionLabels={roleModelLabels(subagentModelOpts)}
             onChange={v => subagentModelMut.mutate(v)}
-            disabled={!mcQ.isSuccess}
+            disabled={!mcQ.isSuccess || backendSaving}
           />
           <SettingsSelect
             label={i18nT('pages.settings.chatPanel.subagent_effort')}
             hint={i18nT('pages.settings.chatPanel.role_effort_hint')}
             value={shownSubagentEffort}
-            options={[...EFFORT_LEVELS]}
-            optionLabels={effortLabels}
+            options={subagentEffortOpts}
+            optionLabels={effortLabelsFor(subagentEffortOpts)}
             onChange={v => subagentEffortMut.mutate(v)}
-            disabled={!mcQ.isSuccess || !subEffortSupported}
+            disabled={!mcQ.isSuccess || backendSaving || !subEffortSupported}
           />
         </SettingsCard>
 

@@ -33,8 +33,10 @@ from typing import Callable, Dict, List, Tuple
 
 from kiro_crew.acp_backends import (
     ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_CODEX,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_OPENCODE,
     ACP_BACKENDS_KNOWN,
     POLICY_ID_BY_BACKEND,
 )
@@ -62,6 +64,8 @@ COMPONENT_CLAUDE_ACP_ADAPTER = "claude-agent-acp"
 #: separate component because the adapter's SDK does NOT search PATH for it, so
 #: having one without the other is a real, distinguishable half-install.
 COMPONENT_CLAUDE_CODE_CLI = "claude"
+COMPONENT_CODEX_ACP_ADAPTER = "codex-acp"
+COMPONENT_OPENCODE = "opencode"
 
 #: How long a verdict is reused. The Claude driver shells out to mise and globs
 #: the filesystem, and the dashboard polls this endpoint, so an uncached probe
@@ -190,6 +194,40 @@ def _probe_claude() -> BackendInstallState:
     )
 
 
+def _probe_codex() -> BackendInstallState:
+    """Codex needs only its public ACP adapter package.
+
+    The published adapter includes a compatible ``@openai/codex`` dependency;
+    ``CODEX_PATH`` is an optional override, not a second required component.
+    """
+    policy_id = _policy_id(ACP_BACKEND_CODEX)
+    if acp_driver.codex_adapter_resolves():
+        return BackendInstallState(
+            ACP_BACKEND_CODEX,
+            policy_id,
+            INSTALLED,
+            restart_required=acp_driver.codex_adapter_cached_negative(),
+        )
+    return BackendInstallState(
+        ACP_BACKEND_CODEX,
+        policy_id,
+        MISSING,
+        (COMPONENT_CODEX_ACP_ADAPTER,),
+        acp_driver.codex_adapter_install_command(),
+    )
+
+
+def _probe_opencode() -> BackendInstallState:
+    """OpenCode ships ACP in its CLI; there is no separate adapter package."""
+    installed = acp_driver.opencode_resolves()
+    return BackendInstallState(
+        ACP_BACKEND_OPENCODE,
+        _policy_id(ACP_BACKEND_OPENCODE),
+        INSTALLED if installed else MISSING,
+        () if installed else (COMPONENT_OPENCODE,),
+    )
+
+
 #: Backend id → its probe. A registry rather than an ``if`` chain so an id with
 #: no probe is a lookup miss that degrades to ``UNKNOWN``, instead of falling
 #: through to whichever branch happened to be last.
@@ -197,6 +235,8 @@ _PROBES: Dict[str, Callable[[], BackendInstallState]] = {
     ACP_BACKEND_KIRO: _probe_kiro,
     ACP_BACKEND_KAS: _probe_kas,
     ACP_BACKEND_CLAUDE: _probe_claude,
+    ACP_BACKEND_CODEX: _probe_codex,
+    ACP_BACKEND_OPENCODE: _probe_opencode,
 }
 
 
@@ -279,6 +319,7 @@ __all__ = [
     "CACHE_TTL_SECONDS",
     "COMPONENT_CLAUDE_ACP_ADAPTER",
     "COMPONENT_CLAUDE_CODE_CLI",
+    "COMPONENT_CODEX_ACP_ADAPTER",
     "COMPONENT_KIRO_CLI",
     "INSTALLED",
     "MISSING",

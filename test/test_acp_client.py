@@ -1268,6 +1268,28 @@ class TestResolveClaudeAcpBin:
         assert str(bin_path) in argv
 
     @_POSIX_EXEC_PATHS_ONLY
+    def test_finds_npm_user_global_install_without_inherited_path(self, tmp_path, monkeypatch):
+        """A service-launched gateway discovers the usual ``~/.npm-global`` bin."""
+        from kiro_crew.acp import client as client_mod
+
+        fake_home = tmp_path / "fakehome"
+        adapter = fake_home / ".npm-global" / "bin" / "claude-agent-acp"
+        adapter.parent.mkdir(parents=True)
+        adapter.write_text("#!/bin/sh\nexit 0\n")
+        adapter.chmod(0o755)
+
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setenv("PATH", "/usr/bin:/bin")
+        monkeypatch.delenv("CLAUDE_AGENT_ACP_BIN", raising=False)
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+        monkeypatch.setattr(client_mod, "_mise_which", lambda tool: None)
+        monkeypatch.setattr(client_mod, "_resolve_vendored_claude_acp", lambda: None)
+
+        argv, _search_path = client_mod._resolve_claude_acp_bin()
+
+        assert argv == [str(adapter)]
+
+    @_POSIX_EXEC_PATHS_ONLY
     def test_mise_which_preferred(self, tmp_path, monkeypatch):
         from kiro_crew.acp import client as client_mod
 
@@ -10562,18 +10584,32 @@ class TestModelEntitlementPreflight:
         assert sent[0][1]["modelId"] == "claude-opus-4.8"
         assert client._model == "claude-opus-4.8"
 
-    @pytest.mark.asyncio
-    async def test_startup_leaves_claude_backend_alone(self):
-        """The claude backend advertises BARE ids while _model is prefixed.
+    def _claude_client(self, option_values: list[str], model: str):
+        """A claude-agent-acp client whose catalog arrives the way the real one does.
 
-        Comparing the two namespaces would call every legitimate model unusable,
-        so that backend keeps its own session/new substitution advisory.
+        The adapter sends NO ``models`` block in ``session/new``; its catalog is
+        the ``model`` config option, and those ``value`` entries are exactly what
+        ``session/set_config_option`` accepts.
         """
-        client = self._client(
-            ["claude-opus-4-8[1m]"],
-            "global.anthropic.claude-opus-4-8[1m]",
-            is_claude=True,
-        )
+        client = self._client([], model, is_claude=True)
+        client._acp_config_options = [
+            {
+                "id": "model",
+                "type": "select",
+                "currentValue": option_values[0],
+                "options": [{"value": v, "name": v} for v in option_values],
+            }
+        ]
+        return client
+
+    @pytest.mark.asyncio
+    async def test_startup_applies_a_model_the_claude_adapter_advertises(self):
+        """An advertised id goes on the wire verbatim -- no registry translation.
+
+        ``opus`` is what the adapter offers and accepts; sending
+        ``global.anthropic.claude-opus-4-8[1m]`` instead is what it refuses.
+        """
+        client = self._claude_client(["default", "sonnet", "opus"], "opus")
         applied = []
 
         async def _set_config_option(config_id, value):
@@ -10583,7 +10619,33 @@ class TestModelEntitlementPreflight:
 
         await client._apply_startup_model()
 
-        assert applied == [("model", "global.anthropic.claude-opus-4-8[1m]")]
+        assert applied == [("model", "opus")]
+
+    @pytest.mark.asyncio
+    async def test_claude_pin_outside_the_advertised_catalog_never_reaches_the_wire(self):
+        """The reported crash, caught one step earlier than the adapter caught it.
+
+        ``gpt-5.6-sol`` reached claude-agent-acp from ``kirocrew.json`` and came
+        back as a ``-32603`` mid-startup. Reading the catalog from the ``model``
+        config option means the id is known to be unservable BEFORE the send, so
+        the pre-flight decides instead of the adapter -- and it names the models
+        the account actually has, which the raw JSON-RPC error never did.
+        """
+        from kiro_crew.acp.client import AcpModelUnavailable
+
+        client = self._claude_client(["default", "sonnet", "opus"], "gpt-5.6-sol")
+        applied = []
+
+        async def _set_config_option(config_id, value):
+            applied.append((config_id, value))
+
+        client.set_config_option = _set_config_option
+
+        with pytest.raises(AcpModelUnavailable) as excinfo:
+            await client._apply_startup_model()
+
+        assert applied == []
+        assert "opus" in str(excinfo.value)
 
     @pytest.mark.asyncio
     async def test_explicit_switch_is_refused_not_downgraded(self):

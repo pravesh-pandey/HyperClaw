@@ -5596,7 +5596,6 @@
       "earlier_messages_open_session": "Более ранние сообщения — открыть полную сессию (закроет разделённый вид)",
       "earlier_messages_unavailable": "Более ранние сообщения больше недоступны в истории этой сессии.",
       "forked_from": "Ответвлено от {{name}}",
-      "model_list": "Список моделей",
       "session_ready_type_a_message_to_start": "Сессия готова. Введите сообщение, чтобы начать.",
       "split_down": "Разделить вниз",
       "split_right": "Разделить вправо",
@@ -6561,7 +6560,25 @@
       "reasoning": "Рассуждения",
       "set_default_for_agent": "Сделать <model/> моделью по умолчанию для <agent/>",
       "set_default_for_new_sessions": "Глобальное значение по умолчанию для новых сессий…",
-      "type_to_filter": "Введите для фильтрации…"
+      "type_to_filter": "Введите для фильтрации…",
+      "provider": "Провайдер",
+      "provider_list": "Список провайдеров",
+      "providers": "Провайдеры",
+      "opencode": "OpenCode",
+      "loading_providers": "Загрузка провайдеров…",
+      "could_not_load_providers": "Не удалось загрузить провайдеров.",
+      "external_adapter_disclosure": "Внешние адаптеры используют собственные разрешения и запускаются без инструментов Crew MCP. Инструменты, заранее разрешённые в их конфигурации, могут обходить контроль разрешений и аудита Crew.",
+      "invalid_backend": "Этот провайдер недоступен для выбора в этой сборке.",
+      "backend_unavailable": "Этот провайдер недоступен на этой машине.",
+      "backend_unavailable_with_command": "Этот провайдер недоступен на этой машине. Установите: {{command}}",
+      "installed_restart_required": "Установлен на этой машине, но перед использованием нужно перезапустить шлюз.",
+      "missing_components": "Отсутствует на этой машине: {{components}}",
+      "missing_components_with_command": "Отсутствует на этой машине: {{components}}. Установите: {{command}}",
+      "claude_code": "Claude Code",
+      "codex": "Codex",
+      "kas_kiro_agent": "KAS (kiro-agent)",
+      "kiro_cli": "Kiro CLI",
+      "same_as_chat": "Как в чате"
     },
     "monacoCodeBlock": {
       "close_editor": "Закрыть редактор",
@@ -10035,25 +10052,6 @@
       "pod_homes_left_on_disk_with_no_live_pod": "Домашние каталоги подов на диске без активного пода"
     },
     "developer": {
-      "agentBackendTab": {
-        "agent_backend": "Бэкенд агента",
-        "claude_code": "Claude Code",
-        "claude_uses_its_own_permissions": "Claude Code обычно запрашивает разрешение перед действием, и {{productName}} проверяет этот запрос. Но инструмент, заранее одобренный в собственных настройках Claude — включая .claude/settings.json внутри проекта — не запрашивает ничего, поэтому правила запрета и журнал аудита не видят такой вызов.",
-        "could_not_load_the_agent_backend": "Не удалось загрузить бэкенд агента.",
-        "could_not_save_the_agent_backend": "Не удалось сохранить бэкенд агента.",
-        "default_all_features_supported": "По умолчанию. Все функции поддерживаются.",
-        "experimental": "Экспериментальный",
-        "install_check_failed": "Не удалось проверить, установлено ли это на данной машине.",
-        "installed_restart_required": "Установлено на этой машине, но перед использованием этот gateway нужно перезапустить.",
-        "kas_kiro_agent": "KAS (kiro-agent)",
-        "kiro_cli": "Kiro CLI",
-        "loading_configuration": "Загрузка конфигурации…",
-        "missing_components": "Отсутствует на этой машине: {{components}}",
-        "missing_components_with_command": "Отсутствует на этой машине: {{components}}. Установите: {{command}}",
-        "new_sessions_use_this_agent_a_session_that_is_al": "Новые сессии используют этого агента. Уже открытая сессия сохраняет того, с которым была начата, — переключение здесь не меняет её посреди сессии.",
-        "retry": "Повторить",
-        "set_is_fixed_at_gateway_start": "Какие агенты здесь появляются, определяется при запуске gateway. Управляемое развёртывание может ограничить набор политикой; изменения политики вступают в силу при следующем запуске."
-      },
       "featurePreviewsTab": {
         "crew": "Crew",
         "inbound_webhook_tokens_registered_contexts_and_r": "Токены входящих вебхуков, зарегистрированные контексты и история запусков. API работает, но страница не доделана.",
@@ -10065,10 +10063,6 @@
     "developerPage": {
       "developer": "Разработчик",
       "tabs": {
-        "agentBackend": {
-          "description": "Какого агента запускают новые сессии — Kiro CLI, Claude Code или KAS",
-          "label": "Бэкенд агента"
-        },
         "archive": {
           "description": "Ротированная и сжатая история сессий (хранение 7 дней)",
           "label": "Архив"
@@ -12194,6 +12188,7 @@
         "failed_to_save_profile": "Не удалось сохранить профиль",
         "failed_to_save_role_effort": "Не удалось сохранить усилие роли",
         "failed_to_save_role_model": "Не удалось сохранить модель роли",
+        "failed_to_save_provider": "Не удалось сохранить провайдера",
         "failed_to_save_session_summaries": "Не удалось сохранить настройку сводок сессий",
         "failed_to_save_soft_stop_budget": "Не удалось сохранить бюджет мягкой остановки",
         "failed_to_save_tips_preference": "Не удалось сохранить настройку подсказок",

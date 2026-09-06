@@ -104,11 +104,13 @@ watchdog hook (`bg_drain_reap`) as the backstop for an idle gateway where no
 other trigger runs. `close_all()` detaches both holders atomically under
 `_bg_runtime_lock` and kills the detached snapshot; its counterpart `_closing`
 gate in `get_bg_session()` refuses to spawn or park once shutdown has started.
-Note there is currently no dashboard edit surface for
-`agent.acp_backend` (a file/CLI edit lands at the next gateway start, where
-`_cfg` is fresh); `refresh_defaults()` re-reads config, so any invocation of it
-picks up a backend change, and a future edit surface gets retirement for free
-by routing through it like the other `agent.*` defaults. The provider-path
+The dashboard edit surface for `agent.acp_backend` is the chat composer's
+provider picker, which writes the key back as the sticky default for new
+sessions (see [providers.md](providers.md)); a file/CLI edit still lands at the
+next gateway start, where `_cfg` is fresh. `refresh_defaults()` re-reads config,
+so any invocation of it picks up a backend change. Note the background handle
+dispatches on the CONFIGURED `agent.acp_backend`, not on any one chat session's
+override — background work is not owned by a slot. The provider-path
 retirement trigger is dormant in the public edition for the same reason the
 `ACP_BACKEND_CLAUDE` branch is: every selectable backend is runtime-capable.
 

@@ -1009,6 +1009,33 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "dashboard.prevent_sleep"
   },
   {
+    "id": "chat.provider",
+    "label": "Provider",
+    "labelKey": "components.modelEffortDropdown.provider",
+    "tab": "chat",
+    "type": "select",
+    "occurrence": 1,
+    "configKey": "agent.acp_backend"
+  },
+  {
+    "id": "chat.provider-2",
+    "label": "Provider",
+    "labelKey": "components.modelEffortDropdown.provider",
+    "tab": "chat",
+    "type": "select",
+    "occurrence": 2,
+    "configKey": "agent.role_backends.background"
+  },
+  {
+    "id": "chat.provider-3",
+    "label": "Provider",
+    "labelKey": "components.modelEffortDropdown.provider",
+    "tab": "chat",
+    "type": "select",
+    "occurrence": 3,
+    "configKey": "agent.role_backends.subagent"
+  },
+  {
     "id": "chat.quick-send",
     "label": "Quick Send",
     "labelKey": "pages.settings.chatPanel.quick_send",

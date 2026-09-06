@@ -59,6 +59,28 @@ BACKEND_SRC_ROOT = Path(__file__).resolve().parent.parent / "src" / "kiro_crew"
 CONFIG_KEY_RE = re.compile(r'"configKey"\s*:\s*"([^"]+)"')
 
 
+def _resolve_entry(index: dict, path: str):
+    """Look a config path up, resolving a MAP CHILD through its wildcard entry.
+
+    The registry models an open-ended map as two rows: the object itself
+    (``agent.role_backends``) and one wildcard child (``agent.role_backends.*``)
+    standing for every key an operator may put in it. A concrete child like
+    ``agent.role_backends.background`` is therefore a legitimate reference that
+    can never appear literally, so an exact-match index alone would report the
+    whole class as drift. Falling back to the wildcard is what lets a UI control
+    deep-link to ONE role instead of to the map that contains it.
+
+    Exact match still wins, so a real key keeps its own type and label.
+    """
+    entry = index.get(path)
+    if entry is not None:
+        return entry
+    parent, _, leaf = path.rpartition(".")
+    if not parent or leaf == "*":
+        return None
+    return index.get(f"{parent}.*")
+
+
 @pytest.fixture()
 def fixture_entries() -> list[dict]:
     """Load the shared JSON fixture used by both vitest and this test."""
@@ -75,9 +97,9 @@ def registry_index() -> dict[str, object]:
 @pytest.fixture()
 def generated_config_keys() -> list[str]:
     """Extract all configKey values from settingsRegistry.gen.ts."""
-    assert SETTINGS_REGISTRY_PATH.exists(), (
-        f"settingsRegistry.gen.ts not found: {SETTINGS_REGISTRY_PATH}"
-    )
+    assert (
+        SETTINGS_REGISTRY_PATH.exists()
+    ), f"settingsRegistry.gen.ts not found: {SETTINGS_REGISTRY_PATH}"
     content = SETTINGS_REGISTRY_PATH.read_text(encoding="utf-8")
     return CONFIG_KEY_RE.findall(content)
 
@@ -86,7 +108,9 @@ class TestSettingRefSchemaFixtureDrift:
     """Every key referenced by frontend SettingRef must exist in the backend."""
 
     def test_fixture_keys_exist_in_registry(self, fixture_entries, registry_index):
-        missing = [e["path"] for e in fixture_entries if e["path"] not in registry_index]
+        missing = [
+            e["path"] for e in fixture_entries if _resolve_entry(registry_index, e["path"]) is None
+        ]
         assert not missing, (
             f"Frontend SettingRef fixture references keys missing from backend "
             f"SCHEMA_REGISTRY: {missing}"
@@ -95,7 +119,7 @@ class TestSettingRefSchemaFixtureDrift:
     def test_fixture_types_match_registry(self, fixture_entries, registry_index):
         mismatches = []
         for entry in fixture_entries:
-            backend = registry_index.get(entry["path"])
+            backend = _resolve_entry(registry_index, entry["path"])
             if backend is None:
                 continue  # covered by test above
             if backend.type != entry["type"]:
@@ -112,14 +136,12 @@ class TestSettingsRegistryGenConfigKeyDrift:
 
     def test_generated_config_keys_found(self, generated_config_keys):
         """At least one configKey exists in the generated file."""
-        assert len(generated_config_keys) > 0, (
-            "No configKey entries found in settingsRegistry.gen.ts"
-        )
+        assert (
+            len(generated_config_keys) > 0
+        ), "No configKey entries found in settingsRegistry.gen.ts"
 
-    def test_all_config_keys_exist_in_schema_registry(
-        self, generated_config_keys, registry_index
-    ):
-        missing = [k for k in generated_config_keys if k not in registry_index]
+    def test_all_config_keys_exist_in_schema_registry(self, generated_config_keys, registry_index):
+        missing = [k for k in generated_config_keys if _resolve_entry(registry_index, k) is None]
         assert not missing, (
             f"settingsRegistry.gen.ts configKey(s) missing from backend "
             f"SCHEMA_REGISTRY — typo or backend rename? Missing: {missing}"
@@ -142,9 +164,7 @@ def _scan_backend_source_for_literal(name: str) -> bool:
 @pytest.fixture()
 def env_vars_fixture() -> list[str]:
     """Load the shared JSON fixture of known env var names."""
-    assert ENV_VARS_FIXTURE_PATH.exists(), (
-        f"Env vars fixture not found: {ENV_VARS_FIXTURE_PATH}"
-    )
+    assert ENV_VARS_FIXTURE_PATH.exists(), f"Env vars fixture not found: {ENV_VARS_FIXTURE_PATH}"
     return json.loads(ENV_VARS_FIXTURE_PATH.read_text(encoding="utf-8"))
 
 
@@ -155,10 +175,7 @@ class TestSettingRefEnvVarsDrift:
         assert len(env_vars_fixture) > 0, "settingref-env-vars.json is empty"
 
     def test_all_env_vars_found_in_backend_source(self, env_vars_fixture):
-        missing = [
-            name for name in env_vars_fixture
-            if not _scan_backend_source_for_literal(name)
-        ]
+        missing = [name for name in env_vars_fixture if not _scan_backend_source_for_literal(name)]
         assert not missing, (
             f"settingref-env-vars.json lists env vars not found in "
             f"src/kiro_crew/**/*.py: {missing}. Either the var was removed "
