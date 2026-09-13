@@ -19,6 +19,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
+from kiro_crew import model_registry
+from kiro_crew.config.loader import DEFAULT_MODEL
+
 if TYPE_CHECKING:
     from kiro_crew.providers.base import LLMProvider
 else:
@@ -1218,26 +1221,50 @@ class SessionAllocationService:
                             if owner._pool_agent
                             else None
                         )
+                        advertised: list[str] = []
                         if getattr(provider, "owns_model_catalog", False) is True:
-                            # The external adapters' config options take the raw
-                            # model id -- the one they advertised. No provider
-                            # namespace is needed when a warm process changes
-                            # owners, and translating into one produces an id
-                            # the adapter refuses.
-                            switch_model = model
-                            comparable_pool = pool_model
-                        else:
-                            switch_model = self._deps.to_acp_id(model)
-                            comparable_pool = (
-                                self._deps.to_acp_id(pool_model) if pool_model else pool_model
-                            )
-                        if pool_model and switch_model != comparable_pool:
                             try:
                                 advertised = self._deps.advertised_model_ids(
                                     provider.available_models()
                                 )
                             except Exception:  # pragma: no cover - defensive
                                 advertised = []
+                            # The external adapters' config options take an id
+                            # from their own catalog. A warm claim must apply
+                            # the same legacy-key bridge as a cold start, or
+                            # it would send the stored canonical key directly.
+                            switch_model = (
+                                model_registry.match_advertised_model(model, advertised) or model
+                                if model != DEFAULT_MODEL
+                                else model
+                            )
+                            comparable_pool = (
+                                (
+                                    model_registry.match_advertised_model(pool_model, advertised)
+                                    or pool_model
+                                )
+                                if pool_model
+                                else pool_model
+                            )
+                        else:
+                            switch_model = self._deps.to_acp_id(model)
+                            comparable_pool = (
+                                self._deps.to_acp_id(pool_model) if pool_model else pool_model
+                            )
+                            try:
+                                advertised = self._deps.advertised_model_ids(
+                                    provider.available_models()
+                                )
+                            except Exception:  # pragma: no cover - defensive
+                                advertised = []
+                        # The inherit sentinel is not a model id an external
+                        # adapter can receive; leaving it off the wire keeps
+                        # warm claims consistent with the cold-start guard.
+                        if (
+                            pool_model
+                            and switch_model != comparable_pool
+                            and model != DEFAULT_MODEL
+                        ):
                             if advertised and self._deps.model_is_unusable(
                                 switch_model, advertised
                             ):

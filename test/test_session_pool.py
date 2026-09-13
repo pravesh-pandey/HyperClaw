@@ -627,6 +627,30 @@ class TestModelMatchesPoolDefault:
             pooled.client.set_model.assert_awaited_once_with("opus")
 
     @pytest.mark.asyncio
+    async def test_pool_external_adapter_bridges_a_legacy_canonical_key(self):
+        from kiro_crew.acp_backends import ACP_BACKEND_OPENCODE
+        from kiro_crew.providers.acp import AcpProvider
+
+        mgr, factory = _make_manager(pool_agent="kirocrew")
+        pooled = _make_provider()
+        pooled.__class__ = AcpProvider
+        pooled._client = MagicMock(backend=ACP_BACKEND_OPENCODE)
+        pooled.owns_model_catalog = True
+        pooled.available_models = MagicMock(
+            return_value=[{"modelId": "opencode/claude-sonnet-4-6"}]
+        )
+        pooled.client.set_model = AsyncMock()
+        pooled.client.resumed = False
+        pooled.client._session_id = "fake-sid"
+        mgr._drain_and_claim = AsyncMock(return_value=pooled)
+        mgr._schedule_replenish = MagicMock()
+
+        with patch.object(type(mgr), "_resolve_agent_model", return_value="default-model"):
+            await mgr.get_or_create("test-key", agent="kirocrew", model="sonnet-4.6-1m")
+
+        pooled.client.set_model.assert_awaited_once_with("opencode/claude-sonnet-4-6")
+
+    @pytest.mark.asyncio
     async def test_pool_external_adapter_skips_a_switch_to_the_model_it_holds(self):
         """No redundant set_model when the claimed process is already on the id."""
         from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE

@@ -4432,12 +4432,19 @@ def _wire_model_id(provider: AcpProvider, model_name: str) -> str:
         # Claude switch: ``to_provider_id("opus", "claude_code")`` produces
         # ``global.anthropic.claude-opus-4-8[1m]``, which claude-agent-acp
         # refuses — its own catalog offers ``opus``.
-        return "" if is_default else model_name
+        if is_default:
+            return ""
+        advertised = [
+            row.get("modelId", "")
+            for row in provider.available_models()
+            if isinstance(row, dict) and isinstance(row.get("modelId"), str)
+        ]
+        return model_registry.match_advertised_model(model_name, advertised) or model_name
     if is_default:
         # kiro DOES express Auto as a real model id — but only switch to it when
         # this session's backend actually advertised it.
-        advertised = {m.get("modelId", "") for m in provider.available_models()}
-        return "auto" if "auto" in advertised else ""
+        advertised_ids = {m.get("modelId", "") for m in provider.available_models()}
+        return "auto" if "auto" in advertised_ids else ""
     return model_registry.to_acp_id(model_name)
 
 

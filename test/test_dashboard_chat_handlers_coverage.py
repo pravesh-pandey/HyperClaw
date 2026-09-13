@@ -28,6 +28,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_OPENCODE,
 )
 from kiro_crew.dashboard import chat_handlers as ch
 from kiro_crew.dashboard.chat_persistence import get_reasoning_effort_values
@@ -283,6 +284,13 @@ class TestWireModelId:
 
     def test_kiro_translates_canonical_key_to_dotted_id(self):
         assert ch._wire_model_id(_acp(), "opus-4.8-1m") == "claude-opus-4.8"
+
+    def test_opencode_qualifies_a_legacy_canonical_key_from_its_catalog(self):
+        provider = _acp(
+            backend=ACP_BACKEND_OPENCODE,
+            available_models=MagicMock(return_value=[{"modelId": "opencode/claude-sonnet-4-6"}]),
+        )
+        assert ch._wire_model_id(provider, "sonnet-4.6-1m") == "opencode/claude-sonnet-4-6"
 
 
 # ── _reapply_effort_after_live_switch ────────────────────────────────────────

@@ -34,6 +34,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -650,6 +651,101 @@ def canonical_key(name: str) -> str | None:
             if key is not None:
                 return key
     return None
+
+
+def match_advertised_model(model_id: str | None, advertised: Iterable[object] | None) -> str | None:
+    """Return the adapter id that represents a known stored model id.
+
+    External adapters may add a routing namespace to a model id (OpenCode uses
+    ``provider/model``), while older KiroCrew settings contain a canonical
+    registry key.  Exact ids always win.  For a known registry model, compare a
+    conservative spelling after removing the adapter's routing prefix and the
+    optional context-capacity marker.  A mapping is returned only when it is
+    unique; an ambiguous catalog must remain an explicit ``AcpModelUnavailable``
+    rather than guessing between models.
+
+    This is a compatibility bridge for persisted selections, not a catalog
+    generator.  New picker values remain the adapter's advertised ids.
+    """
+    if not isinstance(model_id, str):
+        return None
+    wanted = model_id.strip().lower()
+    if not wanted or wanted == "auto":
+        return None
+    if advertised is None or isinstance(advertised, (str, bytes)):
+        return None
+    values = [item.strip() for item in advertised if isinstance(item, str) and item.strip()]
+
+    def unique_values(candidates: list[str]) -> list[str]:
+        seen: set[str] = set()
+        unique: list[str] = []
+        for item in candidates:
+            if item not in seen:
+                seen.add(item)
+                unique.append(item)
+        return unique
+
+    exact = unique_values([item for item in values if item.lower() == wanted])
+    if exact:
+        return exact[0] if len(exact) == 1 else None
+
+    suffix = unique_values(
+        [item for item in values if "/" in item and item.lower().rsplit("/", 1)[-1] == wanted]
+    )
+    if suffix:
+        return suffix[0] if len(suffix) == 1 else None
+
+    # A persisted provider/model id already names its adapter namespace. Do not
+    # strip that namespace and guess a different provider's model.
+    if "/" in wanted:
+        return None
+
+    canonical = canonical_key(wanted)
+    if canonical is None:
+        return None
+
+    def slug(value: str) -> str:
+        value = value.lower().split("/", 1)[-1]
+        value = re.sub(r"\[?1m\]?", "", value)
+        return re.sub(r"[^a-z0-9]", "", value)
+
+    target_1m = "1m" in wanted
+
+    def unique_match(candidates: list[str]) -> str | None:
+        candidates = unique_values(candidates)
+        if len(candidates) == 1:
+            return candidates[0]
+        preferred = unique_values(
+            [item for item in candidates if ("1m" in item.lower()) == target_1m]
+        )
+        return preferred[0] if len(preferred) == 1 else None
+
+    entry = _REGISTRY.get(canonical, {})
+    provider_spellings = [canonical, *entry.get("providers", {}).values()]
+    provider_slugs = {
+        slug(spelling) for spelling in provider_spellings if isinstance(spelling, str)
+    }
+    provider_candidates = [item for item in values if slug(item) in provider_slugs]
+    # Provider ids carry the registry's preferred version spelling. If an
+    # adapter exposes more than one form of that id, preserve the stored
+    # context marker when it selects exactly one candidate.
+    if provider_candidates:
+        return unique_match(provider_candidates)
+
+    # A provider may expose one of the registry's known aliases directly.
+    # Resolve those aliases before applying the looser spelling comparison
+    # below; the registry owns the alias vocabulary for every harness.
+    alias_candidates = [
+        item for item in values if canonical_key(item.lower().rsplit("/", 1)[-1]) == canonical
+    ]
+    if alias_candidates:
+        return unique_match(alias_candidates)
+
+    spellings = [canonical, *entry.get("aliases", [])]
+    spellings.extend(entry.get("providers", {}).values())
+    known_slugs = {slug(spelling) for spelling in spellings if isinstance(spelling, str)}
+    candidates = [item for item in values if slug(item) in known_slugs]
+    return unique_match(candidates)
 
 
 def canonicalize_for_provider(stored_model: str, provider: str) -> str:

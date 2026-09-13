@@ -108,8 +108,14 @@ class TestModelRegistry:
         assert mr.model_window("qwen3-coder-next") == 256_000
         assert mr.model_window("qwen3-coder-480b") == 256_000
         assert mr.model_window("glm-4.7-flash") == 128_000
-        for m in ("deepseek-3.2", "minimax-m2.5", "glm-5", "gpt-5.6-terra",
-                  "qwen3-coder-next", "glm-4.7-flash"):
+        for m in (
+            "deepseek-3.2",
+            "minimax-m2.5",
+            "glm-5",
+            "gpt-5.6-terra",
+            "qwen3-coder-next",
+            "glm-4.7-flash",
+        ):
             assert mr.has_known_window(m) is True
             assert mr.window_source(m) == "supplementary"
 
@@ -143,7 +149,9 @@ class TestModelRegistry:
         try:
             mr._KIRO_WINDOWS.clear()
             assert mr.model_window("auto") == 200_000  # stale registry literal
-            assert mr.model_window("unlisted-model-zzz") is None  # neither registry nor supplementary
+            assert (
+                mr.model_window("unlisted-model-zzz") is None
+            )  # neither registry nor supplementary
             # refresh does the in-memory update synchronously and returns True
             # when the cache changed (signalling the async caller to persist).
             changed = mr.refresh_kiro_windows(
@@ -160,7 +168,10 @@ class TestModelRegistry:
             assert mr.model_window("unlisted-model-zzz") == 272000
             assert mr.model_window("bad") is None  # 0 not cached
             # A no-op refresh (same data) returns False — no persist needed.
-            assert mr.refresh_kiro_windows([{"model_id": "auto", "context_window_tokens": 1000000}]) is False
+            assert (
+                mr.refresh_kiro_windows([{"model_id": "auto", "context_window_tokens": 1000000}])
+                is False
+            )
             # persist is a separate step (offloaded to an executor by the caller).
             mr.persist_kiro_windows()
             assert (tmp_path / "model_windows.json").is_file()  # persisted
@@ -221,8 +232,7 @@ class TestModelRegistry:
     def test_fable_5_canonical_round_trip(self):
         # Fable 5 entry: canonical -> provider id -> canonical.
         assert (
-            mr.to_provider_id("fable-5-1m", "claude_code")
-            == "global.anthropic.claude-fable-5[1m]"
+            mr.to_provider_id("fable-5-1m", "claude_code") == "global.anthropic.claude-fable-5[1m]"
         )
         assert (
             mr.from_provider_id("global.anthropic.claude-fable-5[1m]", "claude_code")
@@ -363,6 +373,68 @@ class TestAcpProviderIds:
         assert mr.from_provider_id("claude-opus-4.8", "acp") == "opus-4.8-1m"
         assert mr.from_provider_id("claude-sonnet-4.6", "acp") == "sonnet-4.6-1m"
 
+
+class TestAdvertisedModelCompatibility:
+    """Legacy stored keys resolve only through the adapter's live catalog."""
+
+    def test_exact_adapter_id_wins(self):
+        advertised = ["opencode/claude-sonnet-4-6", "opencode/gpt-5.6-luna"]
+        assert mr.match_advertised_model("opencode/gpt-5.6-luna", advertised) == (
+            "opencode/gpt-5.6-luna"
+        )
+
+    def test_qualified_adapter_id_matches_a_canonical_key(self):
+        advertised = ["opencode/claude-sonnet-4-6", "opencode/claude-opus-4-8"]
+        assert mr.match_advertised_model("sonnet-4.6-1m", advertised) == (
+            "opencode/claude-sonnet-4-6"
+        )
+
+    def test_provider_spelling_wins_over_folded_aliases(self):
+        advertised = [
+            "opencode/claude-haiku-4-5",
+            "opencode/claude-sonnet-4",
+            "opencode/claude-sonnet-4-5",
+            "opencode/claude-sonnet-4-6",
+        ]
+        assert mr.match_advertised_model("sonnet-4.6-1m", advertised) == (
+            "opencode/claude-sonnet-4-6"
+        )
+
+    def test_known_alias_matches_the_adapter_catalog(self):
+        assert mr.match_advertised_model("sonnet-4.6-1m", ["sonnet", "opus"]) == "sonnet"
+
+    def test_1m_marker_breaks_a_catalog_tie(self):
+        advertised = ["opencode/claude-sonnet-4-6", "opencode/claude-sonnet-4-6[1m]"]
+        assert mr.match_advertised_model("sonnet-4.6-1m", advertised) == (
+            "opencode/claude-sonnet-4-6[1m]"
+        )
+
+    def test_unknown_id_is_not_rewritten(self):
+        assert mr.match_advertised_model("made-up-model", ["opencode/other"]) is None
+
+    def test_malformed_catalog_entries_are_ignored(self):
+        assert (
+            mr.match_advertised_model("sonnet-4.6-1m", [None, 42, "opencode/claude-sonnet-4-6"])
+            == "opencode/claude-sonnet-4-6"
+        )
+        assert mr.match_advertised_model("sonnet-4.6-1m", None) is None
+
+    def test_auto_is_never_bridged(self):
+        assert mr.match_advertised_model("auto", ["auto", "opencode/claude-sonnet-4-6"]) is None
+
+    def test_qualified_stored_id_only_matches_exactly(self):
+        assert (
+            mr.match_advertised_model("other/claude-sonnet-4-6", ["opencode/claude-sonnet-4-6"])
+            is None
+        )
+
+    def test_ambiguous_canonical_match_is_not_guessed(self):
+        advertised = [
+            "opencode/claude-sonnet-4-6",
+            "alternate/claude-sonnet-4-6",
+        ]
+        assert mr.match_advertised_model("sonnet-4.6-1m", advertised) is None
+
     def test_distinct_kiro_models_have_own_canonical_on_acp(self):
         # REGRESSION (adversarial review): haiku-4.5 / sonnet-4.5 / sonnet-4 /
         # opus-4.6 are DISTINCT kiro models but claude_code ALIASES of a 1M
@@ -372,10 +444,10 @@ class TestAcpProviderIds:
         # index still folds them for claude-agent-acp dropdown dedup/downgrade.
         cases = {
             # kiro id            acp canonical    window   cc fold (downgrade)
-            "claude-haiku-4.5":  ("haiku-4.5",    200_000, "sonnet-4.6-1m"),
-            "claude-sonnet-4.5": ("sonnet-4.5",   200_000, "sonnet-4.6-1m"),
-            "claude-sonnet-4":   ("sonnet-4",     200_000, "sonnet-4.6-1m"),
-            "claude-opus-4.6":   ("opus-4.6-1m", 1_000_000, "opus-4.8-1m"),
+            "claude-haiku-4.5": ("haiku-4.5", 200_000, "sonnet-4.6-1m"),
+            "claude-sonnet-4.5": ("sonnet-4.5", 200_000, "sonnet-4.6-1m"),
+            "claude-sonnet-4": ("sonnet-4", 200_000, "sonnet-4.6-1m"),
+            "claude-opus-4.6": ("opus-4.6-1m", 1_000_000, "opus-4.8-1m"),
         }
         for kiro_id, (acp_canon, win, cc_canon) in cases.items():
             assert mr.from_provider_id(kiro_id, "acp") == acp_canon, kiro_id

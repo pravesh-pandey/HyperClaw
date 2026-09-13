@@ -41,7 +41,10 @@ from kiro_crew.acp.types import (
     STOP_REASON_STALE_RECOVER,
     STOP_REASON_TOOL_STALL,
 )
-from kiro_crew.acp_backends import ACP_BACKENDS_PROMPT_COMMANDS
+from kiro_crew.acp_backends import (
+    ACP_BACKENDS_OWN_MODEL_CATALOG,
+    ACP_BACKENDS_PROMPT_COMMANDS,
+)
 from kiro_crew.agent_discovery import warm_project_agent_names
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
 from kiro_crew.autonudge import get_instance
@@ -863,14 +866,14 @@ def _pinned_model_withheld(client: Any, model: str, provider: str) -> bool:
     displays the effective model, so a stale pin is inert and recovers by itself
     if entitlement returns.
 
-    Only the kiro/acp path is checked. ``slot.model`` is a bare dotted wire id
-    there — the same namespace ``session/new`` advertises — while claude_code
-    holds canonical keys against bare advertised ids, and comparing those two
-    namespaces would call every legitimate model unusable (see
-    :func:`model_is_unusable`'s namespace note). ``model_is_unusable`` itself
-    fails open on an empty advertised set, so a session that advertised nothing
-    (or a provider with no getter) leaves the pin alone: entitlement unknown is
-    not entitlement denied.
+    Kiro's slot value is a bare dotted wire id — the same namespace
+    ``session/new`` advertises. External adapters own a separate namespace, so
+    legacy canonical keys are first matched against their live catalog; the
+    Claude Code path holds canonical keys against bare advertised ids and is
+    therefore exempt from this bridge. ``model_is_unusable`` itself fails open
+    on an empty advertised set, so a session that advertised nothing (or a
+    provider with no getter) leaves the pin alone: entitlement unknown is not
+    entitlement denied.
     """
     if not model or model == "auto" or is_claude_code(provider):
         return False
@@ -883,6 +886,9 @@ def _pinned_model_withheld(client: Any, model: str, provider: str) -> bool:
         advertised = advertised_model_ids(getter())
     except Exception:
         return False
+    backend = getattr(client, "backend", None)
+    if backend in ACP_BACKENDS_OWN_MODEL_CATALOG:
+        model = model_registry.match_advertised_model(model, advertised) or model
     return model_is_unusable(model, advertised)
 
 

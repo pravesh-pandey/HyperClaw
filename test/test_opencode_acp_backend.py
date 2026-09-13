@@ -69,6 +69,106 @@ async def test_opencode_model_switch_preserves_wire_id(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_opencode_auto_sentinel_never_reaches_the_wire(tmp_path):
+    client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_OPENCODE)
+    client._session_id = "session"
+    client._store_session_config({"configOptions": _model_options()})
+    client._send_request = AsyncMock()
+
+    with pytest.raises(AcpError, match="auto model sentinel"):
+        await client.set_model("auto")
+
+    client._send_request.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_opencode_legacy_canonical_model_uses_unique_advertised_id(tmp_path):
+    """A Claude/Kiro-era pin must not be sent to OpenCode without its provider."""
+    client = AcpClient(
+        work_dir=tmp_path,
+        acp_backend=ACP_BACKEND_OPENCODE,
+        model="sonnet-4.6-1m",
+    )
+    client._session_id = "session"
+    client._store_session_config(
+        {
+            "configOptions": [
+                {
+                    "id": "model",
+                    "currentValue": "opencode/claude-sonnet-4-6",
+                    "options": [
+                        {"value": "opencode/claude-sonnet-4-6"},
+                        {"value": "opencode/gpt-5.6-luna"},
+                    ],
+                }
+            ]
+        }
+    )
+    client._send_request = AsyncMock(return_value=1)
+    client._wait_for_response = AsyncMock(
+        return_value={"configOptions": client._acp_config_options}
+    )
+
+    await client._apply_startup_model()
+
+    client._send_request.assert_awaited_once_with(
+        "session/set_config_option",
+        {
+            "sessionId": "session",
+            "configId": "model",
+            "value": "opencode/claude-sonnet-4-6",
+        },
+    )
+    assert client._model == "opencode/claude-sonnet-4-6"
+
+
+def test_config_option_bridge_uses_write_capability_gate(tmp_path, monkeypatch):
+    client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_OPENCODE)
+    client._store_session_config(
+        {
+            "configOptions": [
+                {
+                    "id": "model",
+                    "options": [{"value": "opencode/claude-sonnet-4-6"}],
+                }
+            ]
+        }
+    )
+    client._available_models = [{"modelId": "opencode/claude-sonnet-4-6"}]
+    monkeypatch.setattr("kiro_crew.acp.client.ACP_BACKENDS_CONFIG_MODEL_WIRE_IDS", frozenset())
+
+    assert client._adapter_wire_model_id("sonnet-4.6-1m") == ("opencode/claude-sonnet-4-6")
+
+
+@pytest.mark.asyncio
+async def test_opencode_explicit_switch_migrates_legacy_pin(tmp_path):
+    client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_OPENCODE)
+    client._session_id = "session"
+    options = {
+        "id": "model",
+        "currentValue": "opencode/claude-opus-4-8",
+        "options": [
+            {"value": "opencode/claude-opus-4-8"},
+            {"value": "opencode/claude-sonnet-4-6"},
+        ],
+    }
+    client._store_session_config({"configOptions": [options]})
+    client._send_request = AsyncMock(return_value=1)
+    client._wait_for_response = AsyncMock(return_value={"configOptions": [options]})
+
+    await client.set_model("sonnet-4.6-1m")
+
+    client._send_request.assert_awaited_once_with(
+        "session/set_config_option",
+        {
+            "sessionId": "session",
+            "configId": "model",
+            "value": "opencode/claude-sonnet-4-6",
+        },
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("backend", [ACP_BACKEND_CODEX, ACP_BACKEND_OPENCODE])
 async def test_unavailable_adapter_pin_never_uses_expensive_default(tmp_path, backend):
     client = AcpClient(work_dir=tmp_path, acp_backend=backend, model="local/removed-model")

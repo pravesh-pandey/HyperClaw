@@ -49,8 +49,14 @@ The ACP layer spans **five** modules: the legacy per-session client (`acp/client
   `session/set_config_option` for both `model` and `effort` (it advertises the
   effort selector under that name, so no wire-id translation is needed).
 - Model ids are `provider/model` strings drawn from the operator's own provider
-  configuration, so they are the adapter's accepted wire values and are passed
-  verbatim (`ACP_BACKENDS_OWN_MODEL_CATALOG`). `auto` is never put on the wire:
+  configuration. New picker values are the adapter's accepted wire values and
+  are passed verbatim (`ACP_BACKENDS_OWN_MODEL_CATALOG`). A known canonical key
+  left by an older KiroCrew setting is migrated only when it maps to one unique
+  advertised id; an ambiguous or unknown value is left unchanged and refused.
+  The same bridge is used for cold-start config writes, live switches, warm-pool
+  claims, and dashboard entitlement checks. Non-string catalog entries are
+  ignored, and a stored `provider/model` id is never requalified.
+  `auto` is never put on the wire:
   it means "inherit the harness default", and OpenCode's `parseModelSelection`
   would read a slash-less id as a provider with an empty model.
 - Session persistence is adapter-owned, so `session/load` needs no Kiro
@@ -195,9 +201,10 @@ The handshake also branches on the backend:
   `set_config_option` refuses. The option's `options[].value` entries are exactly
   what the adapter accepts, which is also what makes `model_is_unusable` a valid
   pre-wire check for these backends.
-- **Their ids travel verbatim.** Nothing between the picker and the wire maps an
-  adapter model id through `model_registry`: the adapter accepts what it
-  advertised and nothing else. `to_provider_id("opus", "claude_code")` yields
+- **Their advertised ids travel verbatim.** Nothing maps a newly selected adapter
+  id through `model_registry`; the adapter accepts what it advertised and
+  nothing else. The only translation is the legacy-key compatibility bridge
+  described above. `to_provider_id("opus", "claude_code")` yields
   `global.anthropic.claude-opus-4-8[1m]`, which `claude-agent-acp` refuses with
   `-32603 Invalid value for config option model`.
 

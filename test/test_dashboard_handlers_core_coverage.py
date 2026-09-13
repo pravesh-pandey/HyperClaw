@@ -1766,6 +1766,24 @@ class TestAdvertisedModelGuards:
         ids = core_mod._active_advertised_ids(_req(app={"state": state}))
         assert ids == ["claude-sonnet-4.6"]
 
+    def test_external_legacy_pin_is_checked_in_the_adapter_namespace(self) -> None:
+        state = SimpleNamespace(
+            sessions=SimpleNamespace(
+                active_providers=lambda: [
+                    SimpleNamespace(
+                        client=SimpleNamespace(backend="opencode"),
+                        available_models=lambda: [{"modelId": "opencode/claude-sonnet-4-6"}],
+                    )
+                ]
+            )
+        )
+        assert (
+            core_mod._validate_role_model(
+                "sonnet-4.6-1m", _req(app={"state": state}), provider="opencode"
+            )
+            is None
+        )
+
     @pytest.mark.parametrize("value", ["", "auto"])
     def test_defer_values_always_allowed(self, value) -> None:
         assert core_mod._validate_role_model(value, _req()) is None

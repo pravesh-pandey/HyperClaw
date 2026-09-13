@@ -2470,6 +2470,16 @@ class TestPinnedModelWithheld:
         with patch.object(chat_runner, "advertised_model_ids", return_value={"claude-sonnet-4.6"}):
             assert chat_runner._pinned_model_withheld(client, "claude-opus-5", "kiro") is True
 
+    def test_external_legacy_pin_is_not_withheld_after_catalog_match(self):
+        client = MagicMock()
+        client.is_claude_backend = False
+        client.backend = "opencode"
+        client.available_models = MagicMock(
+            return_value=[{"modelId": "opencode/claude-sonnet-4-6"}]
+        )
+
+        assert chat_runner._pinned_model_withheld(client, "sonnet-4.6-1m", "opencode") is False
+
 
 class TestContextUsagePayload:
     def test_missing_counts_emit_a_reset_frame(self):

@@ -21,13 +21,14 @@ from aiohttp import web
 from aiohttp.client_exceptions import ClientConnectionResetError
 
 import kiro_crew
-from kiro_crew import beacon, platform_compat, stt
+from kiro_crew import beacon, model_registry, platform_compat, stt
 from kiro_crew.acp_backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
+    ACP_BACKENDS_CONFIG_MODEL,
     resolve_selected_backend,
     selectable_backend_values,
     selectable_backends,
@@ -1575,7 +1576,22 @@ def _validate_role_model(
     advertised = _active_advertised_ids(request, validation_provider)
     if advertised is None:
         return None
-    if model_is_unusable(value, advertised):
+    backend_by_provider = {
+        "claude_code": ACP_BACKEND_CLAUDE,
+        "codex": ACP_BACKEND_CODEX,
+        "opencode": ACP_BACKEND_OPENCODE,
+    }
+    validation_backend = (
+        backend_by_provider.get(validation_provider, validation_provider)
+        if isinstance(validation_provider, str)
+        else ""
+    )
+    wire_value = value
+    if validation_backend in ACP_BACKENDS_CONFIG_MODEL:
+        # Role settings persist across harness switches. Compare an old
+        # canonical key with the adapter's live namespace before rejecting it.
+        wire_value = model_registry.match_advertised_model(value, advertised) or value
+    if model_is_unusable(wire_value, advertised):
         usable = ", ".join(advertised[:8]) or "auto"
         # Name the HARNESS when the role is only borrowing one. An entitlement
         # message is the wrong diagnosis for a cross-harness pin and sends the
@@ -1673,6 +1689,13 @@ def _effective_role_backend_from_raw(agent_data: object, role: str) -> str:
     return chat_backend
 
 
+# Model ids may be qualified by one adapter namespace (``provider/model``).
+# Keep the grammar structural rather than accepting arbitrary slash-containing
+# strings: config values are persisted and later passed to an external process,
+# so path-like components must never be admitted as model ids.
+_MODEL_ID_PATTERN = r"^(?:[A-Za-z0-9._\-\[\]]+(?:/[A-Za-z0-9._\-\[\]]+)?)?$"
+
+
 _EDITABLE_CONFIG: dict[str, dict] = {
     "agent.provider": {"type": "enum", "values": ["acp"]},
     # Which ACP agent drives a session: "" = kiro-cli, "kas" = kiro-agent.
@@ -1688,11 +1711,12 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # fixed list: the real vocabulary is whatever the live kiro-cli advertises
     # (/api/models spawns it to find out), and it spans both canonical registry
     # keys ("opus-4.8-1m") and kiro's own ids ("claude-opus-4.8"). So this is a
-    # grammar check instead — model-id charset only, no separators or shell
-    # metacharacters — and an unknown-but-well-formed id is rejected downstream
+    # grammar check instead — model-id charset only, with the slash used by
+    # provider-qualified adapters such as OpenCode and no shell metacharacters —
+    # and an unknown-but-well-formed id is rejected downstream
     # by kiro itself rather than silently accepted here. "auto"/"" = defer to
     # the agent config / kiro's own default.
-    "agent.model": {"type": "str", "max_len": 64, "pattern": r"^[A-Za-z0-9._\-\[\]]*$"},
+    "agent.model": {"type": "str", "max_len": 64, "pattern": _MODEL_ID_PATTERN},
     # Per-task-class model overrides. Same grammar as agent.model (the real
     # vocabulary is whatever the backend advertises). "" / "auto" defers to the
     # role's provider default. `validate_fn` additionally rejects a well-formed id the
@@ -1700,13 +1724,13 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     "agent.role_models.background": {
         "type": "str",
         "max_len": 64,
-        "pattern": r"^[A-Za-z0-9._\-\[\]]*$",
+        "pattern": _MODEL_ID_PATTERN,
         "validate_fn": _validate_role_model,
     },
     "agent.role_models.subagent": {
         "type": "str",
         "max_len": 64,
-        "pattern": r"^[A-Za-z0-9._\-\[\]]*$",
+        "pattern": _MODEL_ID_PATTERN,
         "validate_fn": _validate_role_model,
     },
     # Throttle-exhaustion fallback model. Single value: "auto" (default) defers
@@ -1717,7 +1741,7 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     "agent.fallback_model": {
         "type": "str",
         "max_len": 64,
-        "pattern": r"^[A-Za-z0-9._\-\[\]]*$",
+        "pattern": _MODEL_ID_PATTERN,
         "validate_fn": _validate_role_model,
     },
     # Per-task-class harness overrides, paired with role_models. Same value set

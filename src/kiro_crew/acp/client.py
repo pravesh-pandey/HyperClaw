@@ -2745,10 +2745,36 @@ class AcpClient:
             channel_id,
         )
 
+    def _adapter_wire_model_id(self, model_id: str) -> str:
+        """Resolve a stored model spelling into an external adapter id.
+
+        ACP adapters that expose a ``model`` config option own that namespace.
+        The advertised option values are therefore the only source of a wire
+        id; the registry is used only to bridge older persisted canonical keys.
+        Unknown or ambiguous values stay unchanged and are rejected by the
+        adapter's normal entitlement path.
+        """
+        # This helper sits immediately before the config-option write, so the
+        # write-capability set is the right gate. WIRE_IDS is narrower in
+        # meaning: it grants entitlement checks whose advertised ids are also
+        # the accepted wire ids, which is a separate invariant.
+        if self.backend not in ACP_BACKENDS_CONFIG_MODEL:
+            return model_id
+        return (
+            model_registry.match_advertised_model(model_id, self._advertised_model_ids())
+            or model_id
+        )
+
     async def set_model(self, model_id: str) -> None:
         """Switch model on a running session (used by warm pool post-claim)."""
         if not self._session_id:
             raise AcpError("Cannot set model before session is initialized")
+        if self.backend in ACP_BACKENDS_CONFIG_MODEL and model_id.strip().lower() == DEFAULT_MODEL:
+            # External adapters have no config-option value for Crew's
+            # inherit sentinel; sending ``auto`` is an invalid model request,
+            # not a request to restore their backend-selected default.
+            raise AcpError("External ACP adapters cannot receive the auto model sentinel")
+        wire_model_id = self._adapter_wire_model_id(model_id)
         # Unlike the spawn path, this is an explicit request for THIS model, so
         # a silent downgrade would report success while running something else.
         # Refuse before the wire and name what the account can use.
@@ -2764,26 +2790,26 @@ class AcpClient:
         # making the outcome depend on whether a pooled process happened to exist.
         if (
             self._is_kiro or self.backend in ACP_BACKENDS_CONFIG_MODEL_WIRE_IDS
-        ) and self._model_is_unusable(model_id):
-            _rejected_log, _ = redact_exfiltration_urls(str(model_id))
+        ) and self._model_is_unusable(wire_model_id):
+            _rejected_log, _ = redact_exfiltration_urls(str(wire_model_id))
             _rejected_log, _ = redact_credentials(_rejected_log)
             raise AcpModelUnavailable(_rejected_log, self._advertised_model_ids())
         if self.backend in ACP_BACKENDS_CONFIG_MODEL:
-            await self.set_config_option("model", model_id)
+            await self.set_config_option("model", wire_model_id)
         else:
             await self._send_request(
                 METHOD_SET_MODEL,
-                {"sessionId": self._session_id, "modelId": model_id},
+                {"sessionId": self._session_id, "modelId": wire_model_id},
             )
-        self._model = model_id
-        self._resolved_model_id = model_id
+        self._model = wire_model_id
+        self._resolved_model_id = wire_model_id
         # The previous model's window (and its authoritative usage_update, if
         # any) no longer describe this session — rebase the meter stats to the
         # new model so the context meter updates without waiting for the next
         # turn's telemetry (and so _backfill_context_window is un-gated).
         win = (
-            model_registry.model_window(model_id)
-            if model_registry.has_known_window(model_id)
+            model_registry.model_window(wire_model_id)
+            if model_registry.has_known_window(wire_model_id)
             else None
         )
         self.last_prompt_stats.rebase_to_window(win or 0)
@@ -2911,11 +2937,10 @@ class AcpClient:
 
         The model here was NOT chosen for this turn: it arrives from the agent
         spec, the config default, or a slot value persisted before the account's
-        entitlements were known. So when the backend has already told us the
-        account cannot run it, withholding beats failing — the user did not pick
-        this model and cannot be expected to know why every turn dies. The
-        session simply stays on the backend's own default, which ``session/new``
-        already applied and reported as ``currentModelId``.
+        entitlements were known. Kiro can withhold an unavailable inherited id
+        and stay on the default already reported by ``session/new``. External
+        adapters own their config-option namespace, so an unavailable id is
+        rejected with the adapter's advertised catalog instead.
 
         Note this fixes the WIRE, not the stored setting: the persisted config /
         slot value is untouched, so a picker reading it still shows the model
@@ -2928,13 +2953,19 @@ class AcpClient:
         if not self._model or self._model == DEFAULT_MODEL:
             logger.info("ACP model: %s (from agent config)", self._model or "auto")
             return
-        if self.backend in ACP_BACKENDS_CONFIG_MODEL_WIRE_IDS and self._model_is_unusable(
-            self._model
-        ):
+        model_id = self._adapter_wire_model_id(self._model)
+        if model_id != self._model:
+            logger.info(
+                "External ACP model %r resolved to its advertised id %r",
+                self._model,
+                model_id,
+            )
+            self._model = model_id
+        if self.backend in ACP_BACKENDS_CONFIG_MODEL_WIRE_IDS and self._model_is_unusable(model_id):
             # A pin in an adapter's own namespace must fail visibly. Falling
             # back can silently run an expensive default for a cheap-task role.
-            raise AcpModelUnavailable(self._model, self._advertised_model_ids())
-        if self._is_kiro and self._model_is_unusable(self._model):
+            raise AcpModelUnavailable(model_id, self._advertised_model_ids())
+        if self._is_kiro and self._model_is_unusable(model_id):
             _withheld_log, _ = redact_exfiltration_urls(str(self._model))
             _withheld_log, _ = redact_credentials(_withheld_log)
             logger.warning(
@@ -2952,11 +2983,11 @@ class AcpClient:
             return
         try:
             if self.backend in ACP_BACKENDS_CONFIG_MODEL:
-                await self.set_config_option("model", self._model)
+                await self.set_config_option("model", model_id)
             else:
                 await self._send_request(
                     METHOD_SET_MODEL,
-                    {"sessionId": self._session_id, "modelId": self._model},
+                    {"sessionId": self._session_id, "modelId": model_id},
                 )
         except (AcpTimeoutError, AcpProcessDied, AcpAuthRequired):
             # The SESSION is broken, not the setting. Propagate so the caller's

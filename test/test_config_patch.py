@@ -94,6 +94,18 @@ class TestRoleModels:
             assert resp.status == 200
 
     @pytest.mark.asyncio
+    async def test_provider_qualified_model_id_is_persistable(self, tmp_config) -> None:
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await _patch(
+                c,
+                "agent.role_models.subagent",
+                "opencode/claude-sonnet-4-6",
+            )
+            assert resp.status == 200
+        data = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert data["agent"]["role_models"]["subagent"] == "opencode/claude-sonnet-4-6"
+
+    @pytest.mark.asyncio
     async def test_role_model_bad_grammar_rejected(self, tmp_config) -> None:
         async with TestClient(TestServer(_make_app())) as c:
             resp = await _patch(c, "agent.role_models.subagent", "bad; rm -rf /")
