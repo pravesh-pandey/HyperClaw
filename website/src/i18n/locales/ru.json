@@ -7505,7 +7505,24 @@
       "pin_model_unavailable": "<model/> сейчас не предлагается",
       "set_default_for_agent": "Закрепить <model/> за агентом <agent/> (вместо глобального значения по умолчанию)",
       "set_default_for_new_sessions": "Глобальное значение по умолчанию для новых сессий…",
-      "type_to_filter": "Введите для фильтрации…"
+      "type_to_filter": "Введите для фильтрации…",
+      "provider": "Провайдер",
+      "provider_list": "Список провайдеров",
+      "loading_providers": "Загрузка провайдеров…",
+      "could_not_load_providers": "Не удалось загрузить провайдеров.",
+      "invalid_backend": "Этот провайдер недоступен для выбора в этой сборке.",
+      "backend_unavailable": "Этот провайдер недоступен на этой машине.",
+      "backend_unavailable_with_command": "Этот провайдер недоступен на этой машине. Установите: {{command}}",
+      "missing_components": "Отсутствует на этой машине: {{components}}",
+      "missing_components_with_command": "Отсутствует на этой машине: {{components}}. Установите: {{command}}",
+      "installed_restart_required": "Установлен на этой машине, но перед использованием нужно перезапустить шлюз.",
+      "kiro_cli": "Kiro CLI",
+      "claude_code": "Claude Code",
+      "codex": "Codex",
+      "opencode": "OpenCode",
+      "kas_kiro_agent": "KAS (kiro-agent)",
+      "same_as_chat": "Как в чате",
+      "backend_switch_busy": "Завершите или остановите текущий ход, прежде чем менять провайдера."
     },
     "monacoCodeBlock": {
       "close_editor": "Закрыть редактор",
@@ -14994,7 +15011,10 @@
         "message_font_size_desc": "Размер шрифта беседы во всех сессиях: текст сообщений, код, таблицы, предлагаемые ответы и поле ввода сообщения. Компактная ширина содержимого растёт соответственно. Боковая панель, список сессий и остальной интерфейс не затрагиваются.",
         "remove_the_agents_pin": "Снять закрепление",
         "failed_to_clear_agent_model_pin": "Не удалось снять закреплённую модель агента ({{error}}). Попробуй ещё раз.",
-        "failed_to_clear_agent_model_pin_no_reason": "Не удалось снять закреплённую модель агента. Попробуй ещё раз."
+        "failed_to_clear_agent_model_pin_no_reason": "Не удалось снять закреплённую модель агента. Попробуй ещё раз.",
+        "failed_to_save_provider": "Не удалось сохранить провайдера",
+        "background_provider": "Фоновый провайдер",
+        "subagent_provider": "Провайдер субагента"
       },
       "computerUsePanel": {
         "accessibility": "Универсальный доступ",

@@ -219,4 +219,27 @@ describe('model-list liveness (self-heal signal)', () => {
   it('does not poll an unmarked/unknown provider', () => {
     expect(modelListRefetchInterval({ queryKey: ['available-models', 'other'] })).toBe(false)
   })
+
+  it('keeps cached model lists isolated by ACP backend', async () => {
+    ;(api.models as ModelsMock).mockResolvedValueOnce([
+      { model_name: 'auto' },
+      { model_name: 'claude-chat-model' },
+    ]).mockResolvedValueOnce([
+      { model_name: 'auto' },
+      { model_name: 'opencode/provider-model' },
+    ])
+    const adapter = new AcpAdapter()
+    await adapter.fetchAvailableModels(undefined, '')
+    await adapter.fetchAvailableModels(undefined, 'opencode')
+    ;(api.models as ModelsMock).mockRejectedValue(new Error('503'))
+    const models = await adapter.fetchAvailableModels(undefined, 'opencode')
+    expect(models.map(m => m.name)).toEqual(['auto', 'opencode/provider-model'])
+    expect(models.map(m => m.name)).not.toContain('claude-chat-model')
+  })
+
+  it('keeps the default list under the unsuffixed key', async () => {
+    ;(api.models as ModelsMock).mockResolvedValueOnce([{ model_name: 'auto' }, { model_name: 'm' }])
+    await new AcpAdapter().fetchAvailableModels()
+    expect(localStorage.getItem('kc.acp.models.v1')).not.toBeNull()
+  })
 })

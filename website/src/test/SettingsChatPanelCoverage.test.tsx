@@ -59,6 +59,8 @@ const {
   modelsMock,
   tipsStatusMock,
   tipsFeedbackMock,
+  effortLevelsMock,
+  acpBackendsMock,
 } = vi.hoisted(() => ({
   dashboardConfigMock: vi.fn(),
   updateDashboardConfigMock: vi.fn(() => Promise.resolve({})),
@@ -73,6 +75,14 @@ const {
   ),
   tipsStatusMock: vi.fn(() => Promise.resolve({ enabled_config: true, opted_out: false })),
   tipsFeedbackMock: vi.fn(() => Promise.resolve({ ok: true })),
+  effortLevelsMock: vi.fn((_slot?: string, _backend?: string) =>
+    Promise.resolve(['low', 'medium', 'high', 'xhigh', 'max'])),
+  acpBackendsMock: vi.fn(() => Promise.resolve({
+    backends: ['', 'claude', 'codex'].map(id => ({
+      id, policy_id: id || 'kiro', selectable: true, installed: 'installed',
+      missing_components: [], install_command: '', restart_required: false,
+    })),
+  })),
 }))
 
 vi.mock('../api/client', () => ({
@@ -84,6 +94,8 @@ vi.mock('../api/client', () => ({
     agentResolvedModel: () => Promise.resolve({ model: '', pinned: false }),
     patchConfig: patchConfigMock,
     models: modelsMock,
+    effortLevels: effortLevelsMock,
+    acpBackends: acpBackendsMock,
     voiceConfig: () => Promise.resolve({ enabled: false, voice: 'Ruth', engine: 'neural', rate: '100%', autoSpeak: false, aws_profile: '', region: '' }),
     sttConfig: () => Promise.resolve({ enabled: false, provider: '', model: '', available: false, streaming: false, transcribe_region: '', transcribe_profile: '', language_code: 'en-US', models: {}, language_codes: [] }),
     updateVoiceConfig: () => Promise.resolve({}),
@@ -747,14 +759,38 @@ describe('ChatPanel — per-role reasoning effort', () => {
     }
   )
 
-  it('enables the role effort row from the chat default when the role is on auto', async () => {
-    // The gate reads the RESOLVED model: no pin, so the chat default decides.
+  it('does not borrow the chat model to gate a role on auto', async () => {
+    // A role on Auto resolves within ITS OWN harness, so a reasoning-capable chat
+    // model says nothing about it. On Kiro, Auto resolves only at session start,
+    // so the conservative gate keeps the row disabled.
     seedMc({ agent: { model: 'claude-opus-4.8' } })
+    wrap('models')
+    const trigger = await screen.findByRole('combobox', { name: 'Background Effort' })
+    // Settle on the loaded config first, so "disabled" is the gate's answer and
+    // not the loading state.
+    await screen.findByRole('combobox', { name: 'Background Model' })
+    await waitFor(() => expect(trigger).toHaveAttribute('data-disabled'))
+  })
+
+  it('enables a role on auto when its own harness reports an effort ladder', async () => {
+    seedMc({ agent: { model: 'auto', role_backends: { background: 'codex' } } })
     wrap('models')
     await openSelect('Background Effort')
     fireEvent.click(screen.getByRole('option', { name: 'Low' }))
     await waitFor(() =>
       expect(patchConfigMock).toHaveBeenCalledWith('agent.role_efforts.background', 'low')
+    )
+    // The ladder was asked of the ROLE's harness, not chat's.
+    expect(effortLevelsMock).toHaveBeenCalledWith(undefined, 'codex')
+  })
+
+  it('writes a role harness pin and clears it back to "same as chat"', async () => {
+    seedMc({ agent: { role_backends: { subagent: 'codex' } } })
+    wrap('models')
+    const options = await openSelect('Subagent Provider')
+    fireEvent.click(options.find(o => o.textContent === 'Same as chat')!)
+    await waitFor(() =>
+      expect(patchConfigMock).toHaveBeenCalledWith('agent.role_backends.subagent', null)
     )
   })
 })

@@ -842,6 +842,17 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "chat.background-provider",
+    "label": "Background Provider",
+    "labelKey": "pages.settings.chatPanel.background_provider",
+    "tab": "chat",
+    "type": "select",
+    "occurrence": 1,
+    "params": {
+      "sub": "models"
+    }
+  },
+  {
     "id": "chat.compact-empty-folders",
     "label": "Compact Empty Folders",
     "labelKey": "pages.settings.chatPanel.compact_empty_folders",
@@ -1381,6 +1392,17 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "chat.subagent-model",
     "label": "Subagent Model",
     "labelKey": "pages.settings.chatPanel.subagent_model",
+    "tab": "chat",
+    "type": "select",
+    "occurrence": 1,
+    "params": {
+      "sub": "models"
+    }
+  },
+  {
+    "id": "chat.subagent-provider",
+    "label": "Subagent Provider",
+    "labelKey": "pages.settings.chatPanel.subagent_provider",
     "tab": "chat",
     "type": "select",
     "occurrence": 1,

@@ -29,7 +29,9 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_KIRO,
+    ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
     model_registry_namespace,
+    resolve_selected_backend,
     selectable_backend_values,
 )
 from kiro_crew.agent import (
@@ -2091,7 +2093,11 @@ async def _entitled_kiro_models(request: web.Request, models: list[dict]) -> lis
     return kept
 
 
-def _cc_models(request: web.Request, configured_default: str = "") -> list[dict]:
+def _cc_models(
+    request: web.Request,
+    configured_default: str = "",
+    advertised: list[dict] | None = None,
+) -> list[dict]:
     """Assemble the CC model dropdown, scoped to what the account can actually use.
 
     The live backend's advertised set is AUTHORITATIVE when present. It is the
@@ -2117,7 +2123,8 @@ def _cc_models(request: web.Request, configured_default: str = "") -> list[dict]
     ``default: true`` flag sorts the current flagship to the top, which would
     present a specific paid model as the default in the picker.
     """
-    advertised = _advertised_cc_models(request, "claude_code")
+    if advertised is None:
+        advertised = _advertised_cc_models(request, "claude_code")
     registry_rows = model_registry.display_list("claude_code")
 
     if advertised:
@@ -2143,9 +2150,24 @@ def _cc_models(request: web.Request, configured_default: str = "") -> list[dict]
         if not key:
             continue
         if key in seen:
-            # Collision: registry keeps display, advertised id keeps the wire value.
+            # Collision: the advertised id keeps the wire value. The registry
+            # keeps the label for a VERSIONED id, which names one fixed model.
+            # A floating alias (no version digit: ``opus``, ``sonnet``) folds
+            # onto whichever registry entry it named when that row was written,
+            # so the registry would answer "Opus 4.8" for an alias the account
+            # is now served as a newer model; there the adapter's own label wins.
+            # The registry still supplies the context window. A label equal to
+            # the id is the id substituted for a missing name, never a label.
             if key != "auto":
-                merged[seen[key]] = {**merged[seen[key]], "model_name": name}
+                row = {**merged[seen[key]], "model_name": name}
+                # ponytail: "no digit" is the floating-alias test; a registry
+                # flag per alias would replace it if a versioned alias appears.
+                floating = not any(ch.isdigit() for ch in name)
+                for label_field in ("display_name", "description") if floating else ():
+                    supplied = entry.get(label_field)
+                    if isinstance(supplied, str) and supplied.strip() and supplied != name:
+                        row[label_field] = supplied
+                merged[seen[key]] = row
             continue
         seen[key] = len(merged)
         merged.append(entry)
@@ -2207,7 +2229,21 @@ def _cc_models(request: web.Request, configured_default: str = "") -> list[dict]
     return merged
 
 
-def _codex_models(request: web.Request, configured_default: str = "") -> list[dict]:
+def _codex_models(
+    request: web.Request,
+    configured_default: str = "",
+    advertised: list[dict] | None = None,
+) -> list[dict]:
+    """The codex picker; see :func:`_adapter_models`."""
+    return _adapter_models(request, ACP_BACKEND_CODEX, configured_default, advertised)
+
+
+def _adapter_models(
+    request: web.Request,
+    backend: str,
+    configured_default: str = "",
+    advertised: list[dict] | None = None,
+) -> list[dict]:
     """Assemble the codex model dropdown from what codex-acp itself advertises.
 
     codex-acp has no static catalog on our side: the registry carries no codex
@@ -2230,10 +2266,11 @@ def _codex_models(request: web.Request, configured_default: str = "") -> list[di
     is known -- force-including a pin the adapter did not advertise would put back
     the exact row that kills the session.
     """
-    codex_namespace = model_registry_namespace(ACP_BACKEND_CODEX)
-    advertised = _advertised_cc_models(request, codex_namespace)
+    namespace = model_registry_namespace(backend)
     if not advertised:
-        cached = model_registry.advertised_models(codex_namespace)
+        advertised = _advertised_cc_models(request, namespace)
+    if not advertised:
+        cached = model_registry.advertised_models(namespace)
         advertised = [{"model_name": m, "display_name": m, "description": ""} for m in cached]
 
     rows: list[dict] = [
@@ -2289,6 +2326,74 @@ def _wrap_list_models_argv(argv: list[str]) -> tuple[list[str], str | None]:
     return wrap_argv(argv, mode=configured_sandbox_mode(), is_kiro_cli=True)
 
 
+def _slot_backend(request: web.Request, configured: str) -> str:
+    """Which harness a model / effort listing answers for.
+
+    ``?backend=`` names a harness outright -- the Settings per-role pickers ask
+    about a harness no session may be running -- and is re-gated through the
+    one selection gate rather than trusted, so a hand-typed value cannot select
+    an unservable harness. ``?slot=`` scopes to that chat session's own harness
+    when it picked one. Otherwise *configured* answers.
+    """
+    explicit = request.query.get("backend")
+    if isinstance(explicit, str):
+        return resolve_selected_backend(explicit)
+    slot = request.query.get("slot")
+    if not isinstance(slot, str) or not slot:
+        return configured
+    try:
+        target = request.app["state"]._slots.get(slot)
+    except (KeyError, AttributeError):
+        return configured
+    # ``None`` is "no per-session pick" and inherits; ``""`` is an explicit
+    # kiro-cli pick, so the two must not be collapsed with ``or``.
+    picked = getattr(target, "acp_backend", None) if target is not None else None
+    return configured if picked is None else picked
+
+
+def _adapter_read_dir(state: Any, session_key: str) -> Path:
+    """Directory an offline adapter catalog read runs in. FILESYSTEM IO.
+
+    The active project when there is an unambiguous one, else the workspace a
+    session with no pinned project runs in -- never the operator's home. It must
+    match the chat cwd, because adapters read project-local configuration
+    (Claude its ``.claude`` settings, OpenCode its provider list), so a probe
+    elsewhere would advertise a catalog the session then does not have.
+    """
+    from kiro_crew.config.loader import default_project_dir
+
+    project = active_project_dir(state, session_key) if state else None
+    return Path(project) if project else Path(default_project_dir())
+
+
+async def _probe_adapter_catalog(request: web.Request, backend: str, sandbox_mode: str) -> Any:
+    """Read *backend*'s catalog with no live session; see ``acp.adapter_catalog``."""
+    from kiro_crew.acp.adapter_catalog import read_catalog
+
+    state = request.app.get("state")
+    work_dir = await asyncio.to_thread(_adapter_read_dir, state, _read_session_key(request))
+    return await read_catalog(backend, work_dir, sandbox_mode)
+
+
+def _catalog_rows(models: list[dict]) -> list[dict]:
+    """Map a probed ``availableModels`` list to picker rows, ids VERBATIM."""
+    rows: list[dict] = []
+    for entry in models:
+        if not isinstance(entry, dict):
+            continue
+        model_id = entry.get("modelId", "")
+        if not isinstance(model_id, str) or not model_id:
+            continue
+        rows.append(
+            {
+                "model_name": model_id,
+                "display_name": entry.get("name", "") or model_id,
+                "description": entry.get("description", ""),
+            }
+        )
+    return rows
+
+
 def _scoped_default(cfg: Any, backend: str) -> str:
     """The stored pin, but only when *backend*'s own harness can claim it.
 
@@ -2311,22 +2416,30 @@ def _scoped_default(cfg: Any, backend: str) -> str:
 
 
 async def api_models(request: web.Request) -> web.Response:
-    """GET /api/models — the model list for the configured backend.
+    """GET /api/models — the model list for a harness.
 
-    kiro-family backends read kiro-cli's ``--list-models`` catalog (narrowed to a
-    live session's entitlement); claude and codex read what their adapter
-    advertised, because neither accepts an id from that catalog.
+    ``?backend=`` / ``?slot=`` pick the harness (see :func:`_slot_backend`);
+    otherwise the configured one answers. kiro-family backends read kiro-cli's
+    ``--list-models`` catalog (narrowed to a live session's entitlement); an
+    adapted harness reads what it advertised, live or through an offline
+    handshake, because it accepts no id from that catalog.
     """
     cfg = await asyncio.to_thread(KiroCrewConfig.load)
-    backend = getattr(cfg.agent, "acp_backend", "")
-    if backend == ACP_BACKEND_CLAUDE:
-        return web.json_response(
-            _cc_models(request, configured_default=_scoped_default(cfg, backend))
-        )
-    if backend == ACP_BACKEND_CODEX:
-        return web.json_response(
-            _codex_models(request, configured_default=_scoped_default(cfg, backend))
-        )
+    backend = _slot_backend(request, getattr(cfg.agent, "acp_backend", ""))
+    if backend in ACP_BACKENDS_ADVERTISED_MODEL_SELECTION:
+        # No live session of this harness is the SETUP state -- an operator
+        # choosing it has not opened a chat on it -- so read its catalog
+        # offline (cached per TTL in ``adapter_catalog``) instead of offering a
+        # static snapshot, or an ids-only cache from an older adapter, that
+        # misses every model newer than it.
+        offline: list[dict] | None = None
+        if not _advertised_cc_models(request, model_registry_namespace(backend)):
+            catalog = await _probe_adapter_catalog(request, backend, cfg.agent.sandbox)
+            offline = _catalog_rows(catalog.models) or None
+        default = _scoped_default(cfg, backend)
+        if backend == ACP_BACKEND_CLAUDE:
+            return web.json_response(_cc_models(request, default, offline))
+        return web.json_response(_adapter_models(request, backend, default, offline))
     # Signed-out gateways must never reach the spawn below. kiro-cli auto-opens
     # an interactive browser login for ANY subcommand run unauthenticated
     # (--no-interactive does not suppress it, and there is no opt-out env var),
@@ -2577,6 +2690,17 @@ async def api_effort_levels(request: web.Request) -> web.Response:
                     return web.json_response(levels)
         except (KeyError, AttributeError):
             pass
+    # ``?backend=`` (a Settings per-role row) or a slot with no live provider:
+    # an adapted harness's ladder is its own (Codex has no ``default`` rung,
+    # Claude does), so read it through the same cached handshake the model list
+    # uses rather than offering the process-global list it may refuse.
+    if "backend" in request.query or slot:
+        cfg = await asyncio.to_thread(KiroCrewConfig.load)
+        backend = _slot_backend(request, getattr(cfg.agent, "acp_backend", ""))
+        if backend in ACP_BACKENDS_ADVERTISED_MODEL_SELECTION:
+            catalog = await _probe_adapter_catalog(request, backend, cfg.agent.sandbox)
+            if catalog.effort_levels:
+                return web.json_response(catalog.effort_levels)
     return web.json_response(get_reasoning_effort_ordered())
 
 

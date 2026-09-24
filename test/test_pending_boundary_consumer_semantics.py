@@ -229,6 +229,7 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("chat_folders.py", "api_chat_slot_mode"),
                 ("chat_handlers.py", "_switch_target_busy"),
                 ("chat_handlers.py", "api_chat_slot_agent"),
+                ("chat_handlers.py", "api_chat_slot_backend"),
                 ("chat_handlers.py", "api_chat_slot_continue"),
                 ("chat_handlers.py", "api_chat_slot_detail"),
                 ("chat_handlers.py", "api_chat_slot_interrupt"),

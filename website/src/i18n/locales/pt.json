@@ -7397,7 +7397,24 @@
       "pin_model_unavailable": "<model/> não está sendo oferecido no momento",
       "set_default_for_agent": "Fixar <model/> no agente <agent/> (substitui o padrão global)",
       "set_default_for_new_sessions": "Padrão global para novas sessões…",
-      "type_to_filter": "Digite para filtrar…"
+      "type_to_filter": "Digite para filtrar…",
+      "provider": "Provedor",
+      "provider_list": "Lista de provedores",
+      "loading_providers": "Carregando provedores…",
+      "could_not_load_providers": "Não foi possível carregar os provedores.",
+      "invalid_backend": "Este provedor não pode ser selecionado nesta compilação.",
+      "backend_unavailable": "Este provedor não está disponível nesta máquina.",
+      "backend_unavailable_with_command": "Este provedor não está disponível nesta máquina. Instale com: {{command}}",
+      "missing_components": "Ausente nesta máquina: {{components}}",
+      "missing_components_with_command": "Ausente nesta máquina: {{components}}. Instale com: {{command}}",
+      "installed_restart_required": "Instalado nesta máquina, mas o gateway precisa ser reiniciado antes do uso.",
+      "kiro_cli": "Kiro CLI",
+      "claude_code": "Claude Code",
+      "codex": "Codex",
+      "opencode": "OpenCode",
+      "kas_kiro_agent": "KAS (kiro-agent)",
+      "same_as_chat": "Igual ao chat",
+      "backend_switch_busy": "Conclua ou interrompa o turno atual antes de trocar de provedor."
     },
     "monacoCodeBlock": {
       "close_editor": "Fechar editor",
@@ -14778,7 +14795,10 @@
         "message_font_size_desc": "Tamanho da fonte da conversa, em todas as sessões: texto das mensagens, código, tabelas, respostas sugeridas e o campo de entrada de mensagens. A largura de conteúdo compacta cresce na mesma proporção. A barra lateral, a lista de sessões e o restante da interface não são afetados.",
         "remove_the_agents_pin": "Remover a fixação",
         "failed_to_clear_agent_model_pin": "Não foi possível remover o modelo fixado do agente ({{error}}). Tente novamente.",
-        "failed_to_clear_agent_model_pin_no_reason": "Não foi possível remover o modelo fixado do agente. Tente novamente."
+        "failed_to_clear_agent_model_pin_no_reason": "Não foi possível remover o modelo fixado do agente. Tente novamente.",
+        "failed_to_save_provider": "Falha ao salvar o provedor",
+        "background_provider": "Provedor em segundo plano",
+        "subagent_provider": "Provedor de subagente"
       },
       "computerUsePanel": {
         "accessibility": "Acessibilidade",

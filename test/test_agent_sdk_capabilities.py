@@ -641,14 +641,15 @@ class TestAForeignProviderIsClassifiedThePreviousWay:
         assert SubagentManager._is_cc_provider(self._foreign_provider()) is False
 
 
-def test_the_knowledge_pool_client_takes_the_default_backend() -> None:
-    """Pins why swapping ``_is_claude`` for the effort capability changed nothing.
+def test_the_knowledge_pool_effort_channel_follows_the_selected_backend() -> None:
+    """The pool selects a harness (the background role's), so its effort channel
+    must be asked of THAT harness rather than inherited from the kiro default.
 
-    ``AcpWorker`` constructs its ``AcpClient`` without ``acp_backend``, so the
-    backend is the kiro default and both the old identity read and the new
-    capability answer False. If a future pool starts selecting a backend this
-    fails, which is the moment to check the effort channel deliberately rather
-    than inherit whichever arm the old branch left behind.
+    ``AcpWorker._apply_effort`` resolves both halves off the client's own
+    ``backend``: ``capabilities_for(backend).effort_via_config_option`` picks the
+    channel and ``effort_config_option_id(backend)`` its spelling. This pins that
+    the construction forwards the selection and the effort path keeps reading it
+    from the client, so the two cannot disagree.
     """
     tree = _tree("knowledge/llm_pool.py")
     constructions = [
@@ -658,9 +659,8 @@ def test_the_knowledge_pool_client_takes_the_default_backend() -> None:
     ]
     assert constructions, "llm_pool no longer constructs an AcpClient; re-check this pin"
     for call in constructions:
-        passed = {kw.arg for kw in call.keywords}
-        assert "acp_backend" not in passed, (
-            f"llm_pool.py:{call.lineno} now selects a backend; decide the effort "
-            f"channel for it instead of relying on the kiro default"
-        )
+        assert "acp_backend" in {kw.arg for kw in call.keywords}
+    source = (SRC / "knowledge" / "llm_pool.py").read_text(encoding="utf-8")
+    assert 'backend = getattr(client, "backend", "")' in source
+    assert "capabilities_for(backend).effort_via_config_option" in source
     assert capabilities_for("").effort_via_config_option is False

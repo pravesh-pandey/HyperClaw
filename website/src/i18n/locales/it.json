@@ -7397,7 +7397,24 @@
       "pin_model_unavailable": "<model/> non è offerto al momento",
       "set_default_for_agent": "Fissa <model/> sull'agente <agent/> (sostituisce il predefinito globale)",
       "set_default_for_new_sessions": "Predefinito globale per le nuove sessioni…",
-      "type_to_filter": "Digita per filtrare…"
+      "type_to_filter": "Digita per filtrare…",
+      "provider": "Provider",
+      "provider_list": "Elenco provider",
+      "loading_providers": "Caricamento provider…",
+      "could_not_load_providers": "Impossibile caricare i provider.",
+      "invalid_backend": "Questo provider non è selezionabile in questa build.",
+      "backend_unavailable": "Questo provider non è disponibile su questa macchina.",
+      "backend_unavailable_with_command": "Questo provider non è disponibile su questa macchina. Installa con: {{command}}",
+      "missing_components": "Mancante su questa macchina: {{components}}",
+      "missing_components_with_command": "Mancante su questa macchina: {{components}}. Installa con: {{command}}",
+      "installed_restart_required": "Installato su questa macchina, ma il gateway deve essere riavviato prima dell’uso.",
+      "kiro_cli": "Kiro CLI",
+      "claude_code": "Claude Code",
+      "codex": "Codex",
+      "opencode": "OpenCode",
+      "kas_kiro_agent": "KAS (kiro-agent)",
+      "same_as_chat": "Come la chat",
+      "backend_switch_busy": "Completa o interrompi il turno corrente prima di cambiare provider."
     },
     "monacoCodeBlock": {
       "close_editor": "Chiudi l'editor",
@@ -14778,7 +14795,10 @@
         "message_font_size_desc": "Dimensione del carattere della conversazione, in ogni sessione: testo dei messaggi, codice, tabelle, risposte suggerite e campo di inserimento del messaggio. La larghezza compatta del contenuto cresce di conseguenza. La barra laterale, l'elenco delle sessioni e il resto dell'interfaccia non sono interessati.",
         "remove_the_agents_pin": "Rimuovi il suo modello fissato",
         "failed_to_clear_agent_model_pin": "Impossibile rimuovere il modello fissato dell'agente ({{error}}). Riprova.",
-        "failed_to_clear_agent_model_pin_no_reason": "Impossibile rimuovere il modello fissato dell'agente. Riprova."
+        "failed_to_clear_agent_model_pin_no_reason": "Impossibile rimuovere il modello fissato dell'agente. Riprova.",
+        "failed_to_save_provider": "Impossibile salvare il provider",
+        "background_provider": "Provider in background",
+        "subagent_provider": "Provider del subagente"
       },
       "computerUsePanel": {
         "accessibility": "Accessibilità",

@@ -17,8 +17,11 @@ from typing import Optional
 
 from kiro_crew import platform_compat
 from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_KIRO,
+    ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION,
     effort_config_option_id,
     effort_config_option_value,
+    resolve_selected_backend,
 )
 from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
@@ -137,6 +140,46 @@ def _get_provider_type(config: Optional[dict] = None) -> str:
     data = _read_config() if config is None else config
     provider = _section(data, "agent").get("provider", "acp")
     return provider if isinstance(provider, str) and provider else "acp"
+
+
+def _get_acp_backend(config: Optional[dict] = None) -> str:
+    """The ACP harness knowledge workers run on.
+
+    Extraction is unattended background work, so it follows the BACKGROUND
+    role's harness: ``agent.role_backends['background']``, else the chat harness
+    (``agent.acp_backend``) -- the same inherit rule as
+    ``AgentConfig.resolve_backend`` -- re-gated so a value this build cannot
+    serve degrades to Kiro. A worker is a bare :class:`AcpClient`, so only a
+    harness that client drives can be used; one on the multiplexed runtime
+    (Codex) keeps the pool on kiro-cli, as before this setting was read.
+    """
+    from kiro_crew.acp.adapter_catalog import PROBE_BACKENDS
+
+    data = _read_config() if config is None else config
+    agent = _section(data, "agent")
+    role_backends = agent.get("role_backends")
+    if isinstance(role_backends, dict) and isinstance(role_backends.get("background"), str):
+        backend = resolve_selected_backend(role_backends["background"].strip())
+    else:
+        backend = resolve_selected_backend(agent.get("acp_backend", ACP_BACKEND_KIRO))
+    return backend if backend in PROBE_BACKENDS else ACP_BACKEND_KIRO
+
+
+def _get_extraction_model(config: Optional[dict] = None) -> str:
+    """The knowledge model: ``knowledge.extraction_model``, else ``agent.model``, else auto.
+
+    The same order the ``kirocrew-knowledge`` agent spec is written with
+    (``agent.build_knowledge_agent``). Only a harness that takes its model over
+    the wire reads this; kiro-cli reads it from that spec.
+    """
+    data = _read_config() if config is None else config
+    for value in (
+        _section(data, "knowledge").get("extraction_model"),
+        _section(data, "agent").get("model"),
+    ):
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return "auto"
 
 
 def _get_sandbox_mode(config: Optional[dict] = None) -> str:
@@ -277,8 +320,14 @@ class AcpWorker(Worker):
         *,
         sandbox_mode: Optional[str] = None,
         effort: Optional[str] = None,
+        acp_backend: str = ACP_BACKEND_KIRO,
+        model: Optional[str] = None,
     ) -> None:
         self._client: Optional[AcpClient] = None
+        self._acp_backend = acp_backend
+        # Only a harness that takes its model over the wire is handed one; the
+        # kiro path reads the knowledge agent spec's model and stays unchanged.
+        self._model = model if acp_backend in ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION else None
         # Pre-resolved by the caller (off the event loop). ``None`` -> resolve
         # lazily in ``start`` (direct construction outside the pool / tests).
         self._sandbox_mode = sandbox_mode
@@ -314,7 +363,11 @@ class AcpWorker(Worker):
         )
         logger.info("AcpWorker: starting with agent=%s", AGENT_NAME)
         self._client = AcpClient(
-            agent=AGENT_NAME, sandbox_mode=sandbox_mode, audit_source="subagent"
+            agent=AGENT_NAME,
+            model=self._model,
+            sandbox_mode=sandbox_mode,
+            acp_backend=self._acp_backend,
+            audit_source="subagent",
         )
         self._effective_effort = None
         await self._client.ensure_ready()
@@ -680,6 +733,8 @@ class LLMPool:
         self._available: asyncio.Queue[int] = asyncio.Queue()
         self._started = False
         self._provider_type: str = ""
+        self._acp_backend: str = ACP_BACKEND_KIRO
+        self._extraction_model: str = "auto"
         self._config: dict = {}
         self._start_lock = asyncio.Lock()
         # Idle-TTL scale-to-zero (see DEFAULT_IDLE_TTL_SECS). Set from config in
@@ -782,6 +837,8 @@ class LLMPool:
             # Read config once, off the event loop, and reuse for every worker.
             config = await asyncio.to_thread(_read_config)
             self._provider_type = _get_provider_type(config)
+            self._acp_backend = _get_acp_backend(config)
+            self._extraction_model = _get_extraction_model(config)
             # Allow config to override pool size (knowledge.extraction_pool_size).
             # Only applies when the key is explicitly set in config (not the
             # fallback default), so callers that pass a specific pool_size to the
@@ -847,6 +904,8 @@ class LLMPool:
             worker = AcpWorker(
                 sandbox_mode=sandbox_mode,
                 effort=self._effort,
+                acp_backend=self._acp_backend,
+                model=self._extraction_model,
             )
         await worker.start()
         return worker

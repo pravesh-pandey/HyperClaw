@@ -7181,7 +7181,24 @@
       "pin_model_unavailable": "<model/> 目前未提供",
       "set_default_for_agent": "将 <model/> 置顶到 <agent/> 代理（覆盖全局默认）",
       "set_default_for_new_sessions": "新会话的全局默认…",
-      "type_to_filter": "输入以筛选…"
+      "type_to_filter": "输入以筛选…",
+      "provider": "提供商",
+      "provider_list": "提供商列表",
+      "loading_providers": "正在加载提供商…",
+      "could_not_load_providers": "无法加载提供商。",
+      "invalid_backend": "此版本无法选择此提供商。",
+      "backend_unavailable": "此提供商在此计算机上不可用。",
+      "backend_unavailable_with_command": "此提供商在此计算机上不可用。安装命令：{{command}}",
+      "missing_components": "此计算机缺少：{{components}}",
+      "missing_components_with_command": "此计算机缺少：{{components}}。安装命令：{{command}}",
+      "installed_restart_required": "已安装在此计算机上，但网关必须重启后才能使用。",
+      "kiro_cli": "Kiro CLI",
+      "claude_code": "Claude Code",
+      "codex": "Codex",
+      "opencode": "OpenCode",
+      "kas_kiro_agent": "KAS (kiro-agent)",
+      "same_as_chat": "与聊天相同",
+      "backend_switch_busy": "切换提供方前，请先完成或停止当前轮次。"
     },
     "monacoCodeBlock": {
       "close_editor": "关闭编辑器",
@@ -14346,7 +14363,10 @@
         "message_font_size_desc": "所有会话中对话内容的字号：消息文本、代码、表格、建议回复和消息输入框。紧凑内容宽度会随之增大。侧边栏、会话列表和其余界面不受影响。",
         "remove_the_agents_pin": "清除其置顶",
         "failed_to_clear_agent_model_pin": "无法清除代理已置顶的模型（{{error}}）。请重试。",
-        "failed_to_clear_agent_model_pin_no_reason": "无法清除代理已置顶的模型。请重试。"
+        "failed_to_clear_agent_model_pin_no_reason": "无法清除代理已置顶的模型。请重试。",
+        "failed_to_save_provider": "保存提供商失败",
+        "background_provider": "后台提供商",
+        "subagent_provider": "子代理提供商"
       },
       "computerUsePanel": {
         "accessibility": "辅助功能",

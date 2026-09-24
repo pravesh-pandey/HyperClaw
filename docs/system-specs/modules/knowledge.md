@@ -392,7 +392,7 @@ user confirms, and no code path treats it as a bound.
 
 Both entity extraction (`EntityExtractor`) and internal-URL fetch (`agent_fetch.fetch_url_content`) acquire workers from a shared `LLMPool` — a provider-agnostic, bounded pool (`DEFAULT_POOL_SIZE` = 3) of **long-lived** ACP workers. A `Worker` ABC has two concrete paths:
 
-- **Default (kiro-cli)** — `AcpWorker` drives the `kirocrew-knowledge` agent over ACP (`AGENT_NAME`). That agent is installed by `agent.py:_install_knowledge_agent` (model `claude-haiku-4.5`, kirocrew-core tools only — no internal MCP wiring in the OSS fork).
+- **Default** — `AcpWorker` drives the `kirocrew-knowledge` agent over ACP (`AGENT_NAME`) on the BACKGROUND role's harness (`_get_acp_backend`: `agent.role_backends['background']`, else `agent.acp_backend`, re-gated so an unservable value degrades to kiro-cli). A worker is a bare `AcpClient`, so only a harness that client drives (`adapter_catalog.PROBE_BACKENDS`) is used; a runtime-driven one such as Codex keeps the pool on kiro-cli. A harness that takes its model over the wire (`ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION`) is handed `knowledge.extraction_model` → `agent.model` → `auto`; kiro-cli reads the agent spec's model, so its path is unchanged. That agent is installed by `agent.py:_install_knowledge_agent` (model `claude-haiku-4.5`, kirocrew-core tools only — no internal MCP wiring in the OSS fork).
 - **`agent.provider="claude_code"` (legacy seam)** — `CCWorker` drives a long-lived `claude` CLI subprocess over stream-json I/O (haiku model, `bypassPermissions`); URL-fetch tools are opt-in via `KIROCREW_KNOWLEDGE_FETCH_TOOLS`. KiroCrew's provider enum is `["acp"]`, so this branch is dormant in practice.
 
 ### Sweep shielding + audit source

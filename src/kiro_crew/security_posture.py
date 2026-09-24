@@ -806,6 +806,12 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "Job names, cron results, and error strings before they reach a channel.",
     ),
     (
+        "Background session start errors",
+        "session_background.py",
+        "A foreign harness's start-failure diagnostic, before it becomes the error a "
+        "background caller (titles, summaries, heartbeat) reports.",
+    ),
+    (
         "Subagent results",
         "subagent.py",
         "Task text and returned results before injection into the parent context or "

@@ -952,7 +952,9 @@ class TestLLMPoolEffort:
         ):
             result = await pool._create_worker()
 
-        worker_type.assert_called_once_with(sandbox_mode="auto", effort="high")
+        worker_type.assert_called_once_with(
+            sandbox_mode="auto", effort="high", acp_backend="", model="auto"
+        )
         assert result is fake_worker
 
     @pytest.mark.asyncio
@@ -969,7 +971,9 @@ class TestLLMPoolEffort:
         ):
             await pool._create_worker()
 
-        worker_type.assert_called_once_with(sandbox_mode="auto", effort=None)
+        worker_type.assert_called_once_with(
+            sandbox_mode="auto", effort=None, acp_backend="", model="auto"
+        )
 
     @pytest.mark.asyncio
     async def test_fetch_sized_pool_ignores_extraction_size_config(self):
@@ -1580,3 +1584,55 @@ class TestCCWorkerReapsTheProcessTree:
         assert old.wait_calls == 0
         assert replacement.kill_calls == 0
         assert worker.calls_since_reset == 0
+
+
+class TestKnowledgeHarness:
+    """Knowledge workers run on the background role's harness."""
+
+    def test_unpinned_background_follows_the_chat_harness(self) -> None:
+        from kiro_crew.knowledge.llm_pool import _get_acp_backend
+
+        assert _get_acp_backend({"agent": {"acp_backend": "claude"}}) == "claude"
+
+    def test_a_background_pin_wins_over_chat(self) -> None:
+        from kiro_crew.knowledge.llm_pool import _get_acp_backend
+
+        cfg = {"agent": {"acp_backend": "claude", "role_backends": {"background": "opencode"}}}
+        assert _get_acp_backend(cfg) == "opencode"
+
+    def test_an_explicit_kiro_background_pin_is_kept(self) -> None:
+        from kiro_crew.knowledge.llm_pool import _get_acp_backend
+
+        cfg = {"agent": {"acp_backend": "claude", "role_backends": {"background": ""}}}
+        assert _get_acp_backend(cfg) == ""
+
+    def test_a_runtime_driven_harness_keeps_the_pool_on_kiro(self) -> None:
+        # A worker is a bare AcpClient, which cannot drive Codex's runtime
+        # handshake; routing there would fail every extraction.
+        from kiro_crew.knowledge.llm_pool import _get_acp_backend
+
+        assert _get_acp_backend({"agent": {"acp_backend": "codex"}}) == ""
+
+    def test_an_unservable_harness_degrades_to_kiro(self) -> None:
+        from kiro_crew.knowledge.llm_pool import _get_acp_backend
+
+        assert _get_acp_backend({"agent": {"acp_backend": "no-such"}}) == ""
+
+    def test_extraction_model_order(self) -> None:
+        from kiro_crew.knowledge.llm_pool import _get_extraction_model
+
+        assert _get_extraction_model({}) == "auto"
+        assert _get_extraction_model({"agent": {"model": "m1"}}) == "m1"
+        assert (
+            _get_extraction_model(
+                {"agent": {"model": "m1"}, "knowledge": {"extraction_model": "k"}}
+            )
+            == "k"
+        )
+
+    def test_kiro_worker_is_not_handed_a_wire_model(self) -> None:
+        # kiro-cli reads the knowledge agent spec's model; the kiro path is unchanged.
+        from kiro_crew.knowledge.llm_pool import AcpWorker
+
+        assert AcpWorker(acp_backend="", model="m1")._model is None
+        assert AcpWorker(acp_backend="codex", model="m1")._model == "m1"

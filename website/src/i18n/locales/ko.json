@@ -7181,7 +7181,24 @@
       "pin_model_unavailable": "<model/>은(는) 현재 제공되지 않습니다",
       "set_default_for_agent": "<model/>을(를) <agent/> 에이전트에 고정 (전역 기본값보다 우선)",
       "set_default_for_new_sessions": "새 세션의 전역 기본값…",
-      "type_to_filter": "입력하여 필터…"
+      "type_to_filter": "입력하여 필터…",
+      "provider": "제공자",
+      "provider_list": "제공자 목록",
+      "loading_providers": "제공자 로드 중…",
+      "could_not_load_providers": "제공자를 로드할 수 없습니다.",
+      "invalid_backend": "이 빌드에서는 이 제공자를 선택할 수 없습니다.",
+      "backend_unavailable": "이 제공자는 이 컴퓨터에서 사용할 수 없습니다.",
+      "backend_unavailable_with_command": "이 제공자는 이 컴퓨터에서 사용할 수 없습니다. 설치: {{command}}",
+      "missing_components": "이 컴퓨터에 없음: {{components}}",
+      "missing_components_with_command": "이 컴퓨터에 없음: {{components}}. 설치: {{command}}",
+      "installed_restart_required": "이 컴퓨터에 설치되어 있지만 사용하려면 게이트웨이를 다시 시작해야 합니다.",
+      "kiro_cli": "Kiro CLI",
+      "claude_code": "Claude Code",
+      "codex": "Codex",
+      "opencode": "OpenCode",
+      "kas_kiro_agent": "KAS (kiro-agent)",
+      "same_as_chat": "채팅과 동일",
+      "backend_switch_busy": "공급자를 전환하기 전에 현재 턴을 완료하거나 중지하세요."
     },
     "monacoCodeBlock": {
       "close_editor": "편집기 닫기",
@@ -14346,7 +14363,10 @@
         "message_font_size_desc": "모든 세션에서 대화의 글꼴 크기입니다: 메시지 텍스트, 코드, 표, 추천 답변 및 메시지 입력창. 콤팩트 콘텐츠 너비도 이에 맞춰 넓어집니다. 사이드바, 세션 목록 및 나머지 인터페이스에는 영향을 주지 않습니다.",
         "remove_the_agents_pin": "고정 해제",
         "failed_to_clear_agent_model_pin": "에이전트의 고정 모델을 해제할 수 없습니다 ({{error}}). 다시 시도하세요.",
-        "failed_to_clear_agent_model_pin_no_reason": "에이전트의 고정 모델을 해제할 수 없습니다. 다시 시도하세요."
+        "failed_to_clear_agent_model_pin_no_reason": "에이전트의 고정 모델을 해제할 수 없습니다. 다시 시도하세요.",
+        "failed_to_save_provider": "프로바이더를 저장하지 못했습니다",
+        "background_provider": "백그라운드 제공자",
+        "subagent_provider": "서브에이전트 제공자"
       },
       "computerUsePanel": {
         "accessibility": "손쉬운 사용",

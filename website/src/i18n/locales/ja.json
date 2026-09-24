@@ -7181,7 +7181,24 @@
       "pin_model_unavailable": "<model/> は現在提供されていません",
       "set_default_for_agent": "<model/> をエージェント <agent/> に固定（グローバルデフォルトより優先）",
       "set_default_for_new_sessions": "新規セッションのグローバルデフォルト…",
-      "type_to_filter": "フィルターするには入力…"
+      "type_to_filter": "フィルターするには入力…",
+      "provider": "プロバイダー",
+      "provider_list": "プロバイダー一覧",
+      "loading_providers": "プロバイダーを読み込み中…",
+      "could_not_load_providers": "プロバイダーを読み込めませんでした。",
+      "invalid_backend": "このプロバイダーはこのビルドでは選択できません。",
+      "backend_unavailable": "このプロバイダーはこのマシンで利用できません。",
+      "backend_unavailable_with_command": "このプロバイダーはこのマシンで利用できません。インストール: {{command}}",
+      "missing_components": "このマシンにありません: {{components}}",
+      "missing_components_with_command": "このマシンにありません: {{components}}。インストール: {{command}}",
+      "installed_restart_required": "このマシンにインストール済みですが、使用するにはゲートウェイの再起動が必要です。",
+      "kiro_cli": "Kiro CLI",
+      "claude_code": "Claude Code",
+      "codex": "Codex",
+      "opencode": "OpenCode",
+      "kas_kiro_agent": "KAS (kiro-agent)",
+      "same_as_chat": "チャットと同じ",
+      "backend_switch_busy": "プロバイダーを切り替える前に、現在のターンを完了するか停止してください。"
     },
     "monacoCodeBlock": {
       "close_editor": "エディターを閉じる",
@@ -14346,7 +14363,10 @@
         "message_font_size_desc": "会話のフォントサイズ（すべてのセッションに適用）：メッセージのテキスト、コード、表、返信候補、メッセージ入力欄。コンパクトなコンテンツ幅もそれに合わせて広がります。サイドバー、セッション一覧、その他のUIには影響しません。",
         "remove_the_agents_pin": "固定を解除",
         "failed_to_clear_agent_model_pin": "エージェントの固定モデルを解除できませんでした（{{error}}）。もう一度お試しください。",
-        "failed_to_clear_agent_model_pin_no_reason": "エージェントの固定モデルを解除できませんでした。もう一度お試しください。"
+        "failed_to_clear_agent_model_pin_no_reason": "エージェントの固定モデルを解除できませんでした。もう一度お試しください。",
+        "failed_to_save_provider": "プロバイダーを保存できませんでした",
+        "background_provider": "バックグラウンドプロバイダー",
+        "subagent_provider": "サブエージェントプロバイダー"
       },
       "computerUsePanel": {
         "accessibility": "アクセシビリティ",

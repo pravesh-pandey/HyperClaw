@@ -24,7 +24,7 @@ from kiro_crew import model_registry
 # The one gate stays inside ``_normalize_acp_backend`` on the way out of
 # config.json. Only what it reads changed: the registry, instead of a frozen
 # literal.
-from kiro_crew.acp_backends import resolve_selected_backend
+from kiro_crew.acp_backends import resolve_selected_backend, selectable_backends
 from kiro_crew.appearance_packs import safe_pack_id as _safe_pack_id
 from kiro_crew.computer_use.types import DEFAULT_ATTACH_SCREENSHOT as _CU_DEFAULT_ATTACH_SCREENSHOT
 from kiro_crew.computer_use.types import DEFAULT_MAX_TREE_DEPTH as _CU_DEFAULT_MAX_TREE_DEPTH
@@ -171,6 +171,42 @@ def coerce_role_models(raw: object) -> dict[str, str]:
         val = normalize_agent_model(raw.get(role))
         if val:
             out[role] = val
+    return out
+
+
+#: Per-task-class harness overrides (agent.role_backends), same keys as
+#: :data:`ROLE_MODEL_KEYS`. A role absent here runs on ``agent.acp_backend`` --
+#: the chat harness -- because unlike a model there is no "auto" a harness can
+#: resolve for itself, and silently running unattended work on a harness the
+#: operator never selected is the surprise this inherits away from.
+ROLE_BACKEND_KEYS: tuple[str, ...] = ROLE_MODEL_KEYS
+
+
+def coerce_role_backends(raw: object) -> dict[str, str]:
+    """Normalize the per-role harness map from config / request bodies.
+
+    Only :data:`ROLE_BACKEND_KEYS` survive, and each value is re-gated through
+    the same registry config load uses, so a role naming a harness this build
+    cannot serve is dropped rather than reaching a spawn. The empty string is
+    retained when it is explicitly present: it is kiro-cli's real wire id, so
+    dropping it would make it impossible to pin a role to Kiro when chat uses a
+    different harness. An absent role key is the distinct inherit sentinel.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, str] = {}
+    for role in ROLE_BACKEND_KEYS:
+        val = raw.get(role)
+        if not isinstance(val, str):
+            continue
+        normalized = val.strip()
+        if normalized == "" or normalized in selectable_backends():
+            out[role] = resolve_selected_backend(normalized)
+        else:
+            # Call the shared gate for its diagnostic, but do not store its
+            # Kiro fallback: an invalid role pin must not become an explicit
+            # Kiro pin merely because the gate's safe default is empty.
+            resolve_selected_backend(normalized)
     return out
 
 
@@ -926,6 +962,17 @@ class AgentConfig:
             "(keys: 'background', 'subagent'). Empty for a role inherits the chat "
             "default (agent.reasoning_effort) and then the provider/model default. "
             "Only applies on reasoning-capable models.",
+        ),
+    )
+    role_backends: dict[str, str] = field(
+        default_factory=dict,
+        metadata=_meta(
+            "Per-role ACP harness",
+            "Optional per-task-class harness overrides (keys: 'background', "
+            "'subagent'). An unset role runs on the chat harness "
+            "(agent.acp_backend). Point background and sub-agent work at a "
+            "cheaper harness here without moving interactive chat off the one "
+            "you use directly.",
         ),
     )
     fallback_model: str = field(
@@ -1874,6 +1921,7 @@ class AgentConfig:
         # feeds coerced input.
         self.role_models = coerce_role_models(self.role_models)
         self.role_efforts = coerce_role_efforts(self.role_efforts)
+        self.role_backends = coerce_role_backends(self.role_backends)
         # Same defensive TYPE coercion for the DeepSeek provider-key map. What its
         # names and values may BE is refused at spawn, by name -- see
         # coerce_deepseek_env.
@@ -1896,6 +1944,19 @@ class AgentConfig:
         that write a kiro agent spec / cc_model store this verbatim.
         """
         return normalize_agent_model(self.role_models.get(role, "")) or DEFAULT_MODEL
+
+    def resolve_backend(self, role: str) -> str:
+        """Effective ACP harness for a task ``role``.
+
+        Unlike :meth:`resolve_model` this DOES inherit the chat value
+        (``agent.acp_backend``) when the role pins nothing. A model has an
+        ``auto`` sentinel the provider can resolve; a harness does not, so the
+        only sane "unset" is "the same one chat runs on". Pinning a role here is
+        what lets unattended work run on a cheaper harness than interactive chat.
+        """
+        if role in self.role_backends:
+            return self.role_backends[role]
+        return self.acp_backend
 
     def resolve_effort(self, role: str) -> str:
         """Effective reasoning effort for a task ``role`` — INDEPENDENT of the chat

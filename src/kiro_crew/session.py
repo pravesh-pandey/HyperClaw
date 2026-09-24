@@ -532,6 +532,7 @@ POOL_DECISIONS: frozenset[str] = frozenset(
         "bypass_cwd",
         "bypass_effort",
         "bypass_env",
+        "bypass_backend",
         "disabled",
         "other",
     }
@@ -1985,6 +1986,7 @@ class SessionManager:
         "agent.reasoning_effort",
         "agent.acp_backend",
         "agent.role_efforts",
+        "agent.role_backends",
         "agent.tool_search",
         "agent.tool_search_min_pct",
         "agent.tool_search_min_tokens",

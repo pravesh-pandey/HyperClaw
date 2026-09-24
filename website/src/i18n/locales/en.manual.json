@@ -3519,6 +3519,25 @@
       "from_app": "Sent by the {{app}} app",
       "delivery_failed": "Couldn't deliver your message — try again.",
       "from_app_tooltip": "This app posted a message into the chat — Kiro treats it as the app's words, not yours"
+  },
+    "modelEffortDropdown": {
+      "provider": "Provider",
+      "provider_list": "Provider list",
+      "loading_providers": "Loading providers…",
+      "could_not_load_providers": "Could not load providers.",
+      "invalid_backend": "This provider is not selectable on this build.",
+      "backend_unavailable": "This provider is unavailable on this machine.",
+      "backend_unavailable_with_command": "This provider is unavailable on this machine. Install with: {{command}}",
+      "missing_components": "Missing on this machine: {{components}}",
+      "missing_components_with_command": "Missing on this machine: {{components}}. Install with: {{command}}",
+      "installed_restart_required": "Installed on this machine, but this gateway must restart before it can be used.",
+      "kiro_cli": "Kiro CLI",
+      "claude_code": "Claude Code",
+      "codex": "Codex",
+      "opencode": "OpenCode",
+      "kas_kiro_agent": "KAS (kiro-agent)",
+      "same_as_chat": "Same as chat",
+      "backend_switch_busy": "Finish or stop the current turn before switching provider."
     }
   },
   "hooks": {
@@ -6358,7 +6377,10 @@
         "failed_to_load_feature_video_status": "Failed to load feature-video cache status",
         "failed_to_start_feature_video_download": "Failed to start the download",
         "message_font_size": "Message Font Size",
-        "message_font_size_desc": "Font size for the conversation, in every session: message text, code, tables, suggested replies and the message input. The Compact content width grows to match. Sidebar, session list and the rest of the interface are unaffected."
+        "message_font_size_desc": "Font size for the conversation, in every session: message text, code, tables, suggested replies and the message input. The Compact content width grows to match. Sidebar, session list and the rest of the interface are unaffected.",
+        "failed_to_save_provider": "Failed to save provider",
+        "background_provider": "Background Provider",
+        "subagent_provider": "Subagent Provider"
       },
       "displayPanel": {
         "color": "Color {{n}}",

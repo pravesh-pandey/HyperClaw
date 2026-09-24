@@ -42,6 +42,11 @@ if TYPE_CHECKING:
     from kiro_crew.acp.types import AcpEvent
     from kiro_crew.providers.base import LLMProvider
 
+#: How much of a failed background start's reason survives into the error the
+#: caller raises. Bounded because the text is a foreign harness's diagnostic,
+#: which can be an entire multi-line config dump.
+_START_ERROR_CHARS = 400
+
 
 class _BackgroundSessionEntry(Protocol):
     """The live-registry session shape used by the background boundary."""
@@ -139,6 +144,11 @@ class BackgroundRuntimeState:
     #: fails to spawn would otherwise leave the next call with no runtime to
     #: read the tree from, and its replacement would start an empty one.
     inherited_scratch: Path | None = None
+    #: Why the last provider-backed background start failed, for the error the
+    #: caller actually sees. ``_ensure_background`` logs the traceback and
+    #: returns, so without this the caller can only report that the session is
+    #: absent -- naming the harness instead of the reason.
+    last_start_error: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -253,14 +263,69 @@ class BackgroundSessionRuntime:
     def _draining_bg_runtimes(self, runtimes: list[_BackgroundRuntime]) -> None:
         self.state.draining = runtimes
 
+    @staticmethod
+    def _provider_backend(provider: object) -> str | None:
+        """Read a provider's ACP harness without assuming one provider shape."""
+        backend = getattr(provider, "backend", None)
+        if not isinstance(backend, str):
+            client = getattr(provider, "client", None)
+            backend = getattr(client, "backend", None)
+        return backend if isinstance(backend, str) else None
+
+    def _bg_factory_kwargs(self, backend: str) -> dict[str, str]:
+        """``acp_backend_override`` when the background role runs off the chat harness.
+
+        Empty when the role resolves to ``agent.acp_backend``: the factory then
+        inherits exactly as it would with no role pin, so an unpinned install
+        calls it byte-identically and a factory that predates the kwarg keeps
+        working.
+        """
+        try:
+            chat = getattr(self._owner._cfg.agent, "acp_backend", self._deps.acp_backend_kiro)
+        except Exception:
+            chat = None
+        return {} if backend == chat else {"acp_backend_override": backend}
+
     async def _ensure_background(self) -> None:
-        """Create the persistent background session if it doesn't exist."""
+        """Create the persistent background session if it doesn't exist.
+
+        A cached session spawned under a harness the background role no longer
+        resolves to (``agent.role_backends['background']`` changed) is retired
+        and replaced, so a role switch takes effect without a gateway restart.
+        """
         background_key = self._deps.background_key
         background_agent = self._deps.background_agent
         logger = self._deps.logger
+        configured_backend = self._owner._configured_bg_backend()
+        stale_session: _BackgroundSessionEntry | None = None
         async with self._owner._lock:
-            if self._owner._closing or background_key in self._owner._sessions:
+            if self._owner._closing:
                 return
+            existing = self._owner._sessions.get(background_key)
+            if existing is not None:
+                existing_backend = self._provider_backend(existing.provider)
+                if existing_backend is None or existing_backend == configured_backend:
+                    return
+                stale_session = existing
+        if stale_session is not None:
+            # Acquire the entry's semaphore before shutdown so an in-flight
+            # background turn reaches a safe boundary before its provider goes.
+            await stale_session.semaphore.acquire()
+            try:
+                async with self._owner._lock:
+                    if self._owner._sessions.get(background_key) is stale_session:
+                        self._owner._sessions.pop(background_key, None)
+                    else:
+                        # Another creator already replaced it while we waited.
+                        return
+                try:
+                    await stale_session.provider.shutdown()
+                except Exception:
+                    # Unreachable from the registry now; a teardown failure must
+                    # not strand the role on the old harness.
+                    logger.debug("stale background provider shutdown failed", exc_info=True)
+            finally:
+                stale_session.semaphore.release()
         # Create outside lock
         if not self._owner._provider_factory:
             return
@@ -280,14 +345,28 @@ class BackgroundSessionRuntime:
         await self._owner._start_sem.acquire()
         try:
             try:
-                provider = self._owner._provider_factory(background_key, agent=background_agent)
+                provider = self._owner._provider_factory(
+                    background_key,
+                    agent=background_agent,
+                    **self._bg_factory_kwargs(configured_backend),
+                )
                 pre_spawn = await pre_spawn_identity(
                     getattr(self._owner, "spawn_identity_reader", None)
                 )
                 await provider.start()
-            except Exception:
+            except Exception as exc:
                 logger.warning("Failed to create background session", exc_info=True)
+                # Deferred: a leaf of the providers -> acp -> session cycle, and
+                # only needed on the failure path. Dual-redact because the text
+                # is a foreign harness's own diagnostic and may carry a URL or
+                # a credential before it becomes a user-facing error.
+                from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+
+                reason, _ = redact_exfiltration_urls(f"{type(exc).__name__}: {exc}")
+                reason, _ = redact_credentials(reason)
+                self.state.last_start_error = reason[:_START_ERROR_CHARS]
                 return
+            self.state.last_start_error = ""
             # Best-effort spawn-account record; see flag_identity_stamp_mismatches.
             # A cancellation landing in this read would leak the started
             # provider before registration below, so kill it on the way out
@@ -346,7 +425,16 @@ class BackgroundSessionRuntime:
         """Return the configured background backend, or ``None`` if unreadable."""
         logger = self._deps.logger
         try:
-            backend = getattr(self._owner._cfg.agent, "acp_backend", self._deps.acp_backend_kiro)
+            agent_cfg = self._owner._cfg.agent
+            # The BACKGROUND role's harness, not the chat one: a role that pins
+            # nothing inherits agent.acp_backend inside resolve_backend. Falls
+            # back to the raw attribute for a config object without the method.
+            resolver = getattr(agent_cfg, "resolve_backend", None)
+            backend = (
+                resolver("background")
+                if callable(resolver)
+                else getattr(agent_cfg, "acp_backend", self._deps.acp_backend_kiro)
+            )
         except Exception:
             logger.warning(
                 "agent.acp_backend is unreadable; treating the _bg backend as unknown",
@@ -571,7 +659,14 @@ class BackgroundSessionRuntime:
         await self._owner._ensure_background()
         sess = self._owner._sessions.get(self._deps.background_key)
         if sess is None:
-            raise RuntimeError("background session unavailable for non-kiro _bg provider")
+            # Name the REASON, not the harness: an adapter refusing the
+            # operator's own configuration is the common failure here.
+            reason = self.state.last_start_error
+            raise RuntimeError(
+                f"background session could not be started on backend "
+                f"{self._owner._configured_bg_backend()!r}"
+                + (f": {reason}" if reason else " (no reason reported)")
+            )
         return self._deps.provider_bg_session_factory(sess)
 
     async def get_bg_session(self) -> object:
@@ -869,6 +964,7 @@ class BackgroundSessionRuntime:
                     replacement = self._owner._provider_factory(
                         background_key,
                         agent=background_agent,
+                        **self._bg_factory_kwargs(self._owner._configured_bg_backend()),
                     )
                     pre_spawn = await pre_spawn_identity(
                         getattr(self._owner, "spawn_identity_reader", None)

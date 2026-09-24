@@ -48,6 +48,7 @@ import { useConnectionsUiEnabled } from '../hooks/useConnectionsUi'
 import { useAvailableModels } from '../hooks/useAvailableModels'
 import { filterInteractiveModels, legacyCodexEffort, modelWithoutEffort, shouldSeparateModelEffort, switchGroupedModel, useModelPickerConfigured, useModelPickerHiddenModelsQuery } from '../hooks/useInteractiveModels'
 import { modelSupportsEffort } from '../lib/effort'
+import { effectiveBackend, pickerBackend, useConfiguredBackend } from '../hooks/useConfiguredBackend'
 import { isUnpinnedModel, JEV_ROUTE_MODEL, jevRouteOffered, jevRouteShownModel, withJevRoute } from '../lib/jevRoute'
 import { usePlanActionMutation, isPlanAction } from '../hooks/usePlanActionMutation'
 import { useQueuedMessageActions, queuedSendStash } from '../hooks/useQueuedMessageActions'
@@ -190,6 +191,8 @@ export default function ChatPane({
   // One instance covers both dropdown filter inputs (never open at once).
   const dispatch = useAppDispatch()
   const provider = useProvider()
+  // The harness new sessions start on; a pane slot that picked none runs on it.
+  const configuredBackend = useConfiguredBackend()
   // Same gate the main chat uses: hide a Connections-owned OAuth banner only
   // while the card that owns that flow is reachable.
   const connectionsUiOn = useConnectionsUiEnabled()
@@ -582,7 +585,9 @@ export default function ChatPane({
   // The pop-up lists the full catalog (a same-name member and template are
   // two rows); every other reader of the roster keeps the name-folded list.
   const agentDD = useFilteredDropdown(agentChoices)
-  const localModels = useAvailableModels()
+  // Scoped to this pane's harness only when it picked a non-default one, so
+  // panes on the default harness share the default list's cache entry.
+  const localModels = useAvailableModels({ backend: pickerBackend(paneSlot?.acp_backend, configuredBackend) })
   const effectiveModels = useMemo<ModelInfo[]>(() => {
     if (!paneRemoteCrew.isRemote) return localModels
     return (paneRemoteCrew.capabilities?.models ?? []).map(model => ({
@@ -1912,6 +1917,7 @@ export default function ChatPane({
           // See ChatPage: the slot's RAW model, because `shownModel` substitutes
           // the served id and would hide every routed turn.
           modelIsJevRouted={jevRouteOn && isUnpinnedModel(paneSlot?.model)}
+          backendId={paneRemoteCrew.isRemote ? undefined : effectiveBackend(paneSlot?.acp_backend, configuredBackend)}
           contextPct={contextPct}
           contextUsedTokens={contextTokens?.used}
           contextWindowTokens={contextTokens?.window || provider.getContextWindow(shownModel)}

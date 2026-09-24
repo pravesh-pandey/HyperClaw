@@ -1193,6 +1193,16 @@ The slow-command record (`record_slow_command`, `subagent_persistence.py`) is ap
 An incremental progress frame **creates** the panel entry when the client holds none for the id it names, rather than being discarded. The store's incremental reducers (`sseSubagentTool`, `sseSubagentStalled`, `sseSubagentRetrying`, `sseSubagentBatchUpdate`, `sseSubagentBatchChunks`) resolve through `upsertSlotSub` (`website/src/store/chatSlice.ts`), which returns the existing entry or mints a minimal one (`status: 'running'`, empty `task`/`agent`, filled in by any later frame that carries them). This is required because these frames are the only evidence the panel receives between one `subagent_spawn` and one `subagent_done`, and `clearSubagentsForSnapshot` keeps only `pending` entries across a reconnect — so an agent already running at that moment has its entry discarded while every frame it has left is an incremental one, and a reducer that refused to create would leave it invisible for the rest of its run. The prototype-pollution contract is unchanged: `upsertSlotSub` refuses a poisoned slot or id via `isUnsafeKey` and routes any write through `safeKey`, so such a frame creates nothing. Reducers whose frame only decorates an existing card (`markSubagentApproving`) keep the read-only `getSlotSub` and still require one.
 
 
+### Harness pin (`agent.role_backends['subagent']`)
+
+`_subagent_default_backend(parent_backend)` answers which ACP harness a spawned
+sub-agent runs on: the role's pin when set, else the parent slot's own harness
+when it picked one, else the chat harness. It returns `None` (omit the kwarg, the
+factory inherits) when that equals `agent.acp_backend`, and the harness otherwise;
+the run passes it as `acp_backend_override`, which bypasses the warm pool and — like
+a model or effort pin — forces the dedicated-process path, since the parent's shared
+runtime is a different binary. An unreadable config answers `None`.
+
 ### Model Provenance (#3582)
 
 Every subagent card names the model the run actually ran on, so a model-pinned

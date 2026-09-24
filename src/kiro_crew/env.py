@@ -31,6 +31,11 @@ _EXTRA_PATH_DIRS = (
     "{home}/.local/bin",
     "{home}/.toolbox/bin",
     "{home}/.npm-packages/bin",
+    # npm's user-global prefix is commonly configured as ~/.npm-global. A
+    # desktop/service gateway does not inherit the interactive shell PATH that
+    # usually adds this directory, so include it beside the older
+    # ~/.npm-packages convention.
+    "{home}/.npm-global/bin",
     "{mise_data}/shims",
     "{home}/.volta/bin",
     "/opt/homebrew/bin",  # Apple Silicon Homebrew node / global npm bins

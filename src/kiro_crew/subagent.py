@@ -1128,6 +1128,36 @@ def _subagent_default_effort() -> str:
         return ""
 
 
+def _subagent_default_backend(parent_backend: str | None = None) -> str | None:
+    """The ACP harness sub-agents run on, or ``None`` to inherit.
+
+    ``None`` -- not ``""`` -- is the "no opinion" answer, because ``""`` is
+    kiro-cli's real wire id and would pin every sub-agent to kiro. Returns a
+    concrete harness only when the effective role pin differs from the factory's
+    configured chat harness; otherwise the caller omits the kwarg and the factory
+    inherits. When the parent chat slot runs a per-session harness,
+    ``parent_backend`` supplies it so an unpinned role inherits that session
+    rather than the global chat default. Never raises.
+    """
+    try:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        agent_cfg = KiroCrewConfig.load().agent
+        if "subagent" in agent_cfg.role_backends:
+            effective = agent_cfg.role_backends["subagent"]
+        elif isinstance(parent_backend, str):
+            effective = parent_backend
+        else:
+            effective = agent_cfg.acp_backend
+        # Compared against what the factory falls back to when the kwarg is
+        # OMITTED (agent.acp_backend), never against the parent: the factory
+        # does not learn the parent slot's per-session pick, so a slot that
+        # moved off the global default must still get an explicit override.
+        return effective if effective != agent_cfg.acp_backend else None
+    except Exception:
+        return None
+
+
 def _spawn_effective_model(model: str, agent: str, *, crew_agent: str | None = None) -> str | None:
     """Resolve the factory's model; ``""`` means auto, ``None`` means unavailable.
 

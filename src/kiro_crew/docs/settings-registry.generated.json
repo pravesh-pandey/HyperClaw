@@ -454,6 +454,12 @@
       "route": "/settings/chat/models?highlight=chat.background-model"
     },
     {
+      "id": "chat.background-provider",
+      "label": "Background Provider",
+      "tab": "chat",
+      "route": "/settings/chat/models?highlight=chat.background-provider"
+    },
+    {
       "id": "chat.compact-empty-folders",
       "label": "Compact Empty Folders",
       "tab": "chat",
@@ -768,6 +774,12 @@
       "label": "Subagent Model",
       "tab": "chat",
       "route": "/settings/chat/models?highlight=chat.subagent-model"
+    },
+    {
+      "id": "chat.subagent-provider",
+      "label": "Subagent Provider",
+      "tab": "chat",
+      "route": "/settings/chat/models?highlight=chat.subagent-provider"
     },
     {
       "id": "chat.tail-only-fork",

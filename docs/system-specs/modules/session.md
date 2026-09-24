@@ -280,6 +280,15 @@ background work. It is:
   — applies to the **non-kiro** `_bg` path only; see "Multiplexed _bg runtime"
 - **Shared by**: heartbeat tasks, lesson extraction (NOT cron — see below)
 
+It runs on the BACKGROUND role's harness,
+`AgentConfig.resolve_backend("background")` (`agent.role_backends['background']`,
+else the chat harness), through `_configured_bg_backend_raw` — so both the
+multiplexed runtime and the provider-backed path spawn there. On the provider path a
+cached `_bg` session whose harness no longer matches is retired and replaced on the
+next `_ensure_background`, after its semaphore is acquired so an in-flight task ends
+first; a start failure keeps its redacted, bounded reason so the caller's error names
+why instead of only which harness.
+
 This eliminates the cost of spawning/tearing down a kiro-cli process for
 every cron job or heartbeat tick. Background tasks acquire the semaphore,
 do their work, and release — the process stays warm.
@@ -1282,6 +1291,7 @@ document validates. Otherwise it does three things, in order:
   `_FACTORY_CONFIG_PATHS` lists the paths a rebuilt provider factory or a
   re-derived warm pool is the only way to honour: `agent.model`,
   `agent.reasoning_effort`, `agent.acp_backend`, `agent.role_efforts`,
+  `agent.role_backends`,
   `agent.tool_search{,_min_pct,_min_tokens}`, `agent.sandbox`,
   `agent.sandbox_allow_no_isolation`, `agent.sandbox_allow_unsandboxed_exec`,
   `agent.member_acp_backend`, and `session.pool_size` / `pool_agent` /
@@ -2977,6 +2987,36 @@ model; the other transports run two sessions bridged by the mirror. Folding the
 dashboard channel tab into the channel session (as Slack does) would remove the
 second sid and the live render-duplication it can cause, at the cost of a
 dashboard-turn-loop refactor.
+
+## Per-session harness (slot `acp_backend`)
+
+A dashboard chat slot may run on its own ACP harness. `_ChatSlot.acp_backend` is
+`None` for a slot that never picked (it follows `agent.acp_backend`, including a later
+change to it) and a harness id for one that did — `""` being an explicit Kiro pick,
+kept distinct from `None` everywhere: persistence writes the key only when it is not
+`None`, restore re-gates the value through `resolve_selected_backend` so a harness this
+build no longer serves degrades to Kiro, and the slot projection ships it raw.
+
+- **Spawn.** The chat runner passes `acp_backend_override` to `get_or_create` only for
+  a slot that picked; the factory forwards it to `members.select_provider_backend`
+  (member route, then the request, then the configured default), so the factory body
+  gains no branch of its own (harness-parity H3/H13). A role pin reaches the same seam
+  (background runtime, sub-agent spawn).
+- **Warm pool.** The pool is pre-spawned on the configured harness, so a request for a
+  different one bypasses it with `pool_decision="bypass_backend"`; a request equal to
+  the configured harness, and no request at all, keep the warm start. The check reads
+  config off the loop and only when a request exists.
+- **Switch.** `POST /api/chat/slots/{slot}/backend` (`{"backend": id}`) has no live
+  path: another harness is another process with incompatible session ids. Under the
+  same slot + session locks as the model and effort handlers it refuses an
+  unselectable id (400 `invalid_backend`), an uninstalled adapter (409
+  `backend_unavailable` with its install command), a turn in flight (409
+  `turn_in_flight`) and a remote-bound slot (409 `remote_backend_unsupported`);
+  otherwise it commits the harness, clears the slot's model (an id means something in
+  one harness only), resets the session, and writes the pick to `agent.acp_backend` so
+  the next new session starts there. Re-picking the harness a slot already runs is a
+  no-op. A later model pick on a slot whose live process runs a different harness
+  than it selects resets instead of switching live.
 
 ## Session Lifecycle at Startup
 

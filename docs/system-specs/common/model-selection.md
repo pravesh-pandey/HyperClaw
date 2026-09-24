@@ -270,6 +270,24 @@ its own once the cache refreshes with a list that carries it.
   chooses an override. Picking a model stores the base ID; the backend's existing
   effort reapply path keeps a slot override in force. Other backends' model IDs,
   including Claude window suffixes such as `[1m]`, remain intact.
+- `GET /api/models` and `GET /api/effort-levels` answer for ONE harness:
+  `?backend=<id>` names it outright (the Settings per-role rows), `?slot=<key>` scopes
+  to that chat session's own pick, and with neither the configured
+  `agent.acp_backend` answers (`dashboard/handlers/agents.py::_slot_backend`). A
+  `?backend=` value is re-gated through `resolve_selected_backend`, so an unservable
+  id degrades to Kiro rather than selecting it. For a harness whose ids come only
+  from what it advertises (`ACP_BACKENDS_ADVERTISED_MODEL_SELECTION`), a live session
+  of that harness answers; with none running, `acp/adapter_catalog.py` reads the
+  catalog and effort ladder through one `initialize` + `session/new` handshake — no
+  prompt, no tokens — cached per harness for 15 minutes (a failure for 60 seconds)
+  with concurrent readers collapsed onto one spawn. That is what keeps a cold picker
+  from offering a static snapshot that misses every model newer than it. Only
+  harnesses `AcpClient` drives are probed (`PROBE_BACKENDS`): Kiro and KAS have their
+  own catalog command, and a harness on the multiplexed runtime (Codex) speaks its
+  handshake through `acp.harness`, so its cold picker reads the advertised-model cache
+  its sessions keep warm instead. The adapter's own label wins over
+  the registry's for a floating alias (`opus`, `sonnet`: no version digit), because
+  the registry names the model the alias pointed at when its row was written.
 - `dashboard.model_picker_hidden_models` is a presentation preference over that
   advertised set. It filters only the interactive ChatPage and ChatPane pickers;
   `auto` and each slot's active model remain visible. Settings defaults, role and
@@ -287,6 +305,13 @@ its own once the cache refreshes with a list that carries it.
   `subagent`), read by `AgentConfig.resolve_model(role)` in `config/sections.py`. Roles
   default to `"auto"` and deliberately do NOT inherit `agent.model`, so a user's chat
   model does not silently become the price of every background task.
+- **Run a role on another harness** through `agent.role_backends.<role>` (same keys),
+  read by `AgentConfig.resolve_backend(role)`. Unlike a model, an unset role INHERITS
+  the chat harness (`agent.acp_backend`): a harness has no `auto` to resolve. `""` is
+  an explicit Kiro pin; a `null` PATCH deletes the key so the role inherits again. A
+  role's model pin is validated against the ROLE's harness catalog, and a refusal on a
+  role that is only borrowing the chat harness names `agent.role_backends.<role>` as
+  the fix rather than reporting an entitlement problem.
 - **Entitlement checks** always use the shared predicate
   `acp.client.model_is_unusable(id, advertised)` together with
   `advertised_model_ids(...)`. It is one predicate on purpose: two spellings of "can

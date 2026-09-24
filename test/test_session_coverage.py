@@ -411,7 +411,7 @@ class TestGetBgSessionNonKiro:
         mgr = SessionManager(cfg)
 
         with patch.object(mgr, "_ensure_background", AsyncMock()):
-            with pytest.raises(RuntimeError, match="background session unavailable"):
+            with pytest.raises(RuntimeError, match="background session could not be started"):
                 await mgr.get_bg_session()
 
     @pytest.mark.asyncio

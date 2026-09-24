@@ -1340,6 +1340,17 @@ def _is_bedrock_profile_id(model: str) -> bool:
     return "anthropic." in m or "[1m]" in m
 
 
+def _slot_backend_kwargs(slot: Any) -> dict[str, str]:
+    """``acp_backend_override`` for a slot that picked its own harness, else ``{}``.
+
+    ``None`` means the slot inherits the configured harness, and then the kwarg
+    is omitted entirely so allocation is byte-identical to a slot that never had
+    the field. ``""`` is a real pick (kiro-cli) and is passed.
+    """
+    picked = getattr(slot, "acp_backend", None)
+    return {} if picked is None else {"acp_backend_override": picked}
+
+
 def _backfill_canonical_model(client: Any, provider: str) -> str:
     """Read the provider's resolved model (``client.client._model``) and map it
     to its canonical registry key for the dropdown, or ``""`` if unavailable.
@@ -7371,6 +7382,9 @@ async def _spawn_admitted_prefetch(
             speculative=True,
             speculative_resume=allow_resume,
             reasoning_effort_override=slot.reasoning_effort or None,
+            # The slot's own harness pick; absent (not None) when it inherits,
+            # so an unpicked slot allocates exactly as before.
+            **_slot_backend_kwargs(slot),
         )
     except SpeculativeResumeRefused:
         # Two sources: the entry gate (resumable key, resume not
@@ -11473,6 +11487,7 @@ async def _run_chat(
             # direct dashboard turn.
             channel_id=_provider_channel_id or None,
             reasoning_effort_override=slot.reasoning_effort or None,
+            **_slot_backend_kwargs(slot),
         )
 
         def _release_dispatch_lock() -> None:

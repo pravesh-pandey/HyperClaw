@@ -1654,6 +1654,25 @@ class SessionAllocationService:
 
         return is_member_session_key(key)
 
+    async def _pool_blocks_backend(self, override: object) -> bool:
+        """True when a per-session harness request makes the warm pool unusable.
+
+        ``None`` is no request: the session inherits the configured harness, the
+        one the pool was spawned on, so it stays claimable and no config is read.
+        Any other value bypasses only when it differs from that harness, so a
+        pick matching the default keeps its warm start. Read off the event loop
+        for the reason :meth:`_crew_pins_effort` documents. A failed read answers
+        "blocking": serving from a pool whose harness could not be confirmed is
+        the failure this gate exists to prevent.
+        """
+        if override is None:
+            return False
+        try:
+            config = await asyncio.to_thread(self._deps.load_config)
+            return str(override) != config.agent.acp_backend
+        except Exception:
+            return True
+
     async def _crew_pins_effort(self, agent: str | None, crew_agent: object) -> bool:
         """True when the crew this session runs as pins its own reasoning effort.
 
@@ -2070,6 +2089,12 @@ class SessionAllocationService:
             # fixed when it was pre-spawned with no parent. Cold-starting is what
             # makes ``$KIROCREW_SCRATCH`` name the same place as the parent's.
             pool_decision = "bypass_shared_scratch"
+        elif await self._pool_blocks_backend(extra_factory_kwargs.get("acp_backend_override")):
+            # The warm pool is pre-spawned on the CONFIGURED harness, so a
+            # session that picked a different one (a chat slot's own pick, a
+            # role pin) cannot be served from it: the pooled child is another
+            # binary. Claiming would hand it a harness it did not choose.
+            pool_decision = "bypass_backend"
         elif await self._crew_pins_effort(agent, extra_factory_kwargs.get("crew_agent")):
             # A CREW's pinned effort is fixed at spawn time and the warm-pool
             # claim path never re-pushes it, so a warm hit would silently run
@@ -2151,7 +2176,14 @@ class SessionAllocationService:
                                 advertised,
                             )
                         if self._deps.is_claude_backend(provider):
-                            switch_model = self._deps.to_provider_id(model, "claude_code")
+                            # An id the claimed process ADVERTISED is already its
+                            # wire value; translating the adapter's own ``opus``
+                            # alias would answer a Bedrock id it refuses.
+                            switch_model = (
+                                model
+                                if pool_model and model in advertised
+                                else self._deps.to_provider_id(model, "claude_code")
+                            )
                             comparable_pool = (
                                 self._deps.to_provider_id(pool_model, "claude_code")
                                 if pool_model

@@ -2722,6 +2722,9 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
         model=agent_data.get("model", DEFAULT_MODEL),
         role_models=coerce_role_models(agent_data.get("role_models")),
         role_efforts=coerce_role_efforts(agent_data.get("role_efforts")),
+        # Coerced by AgentConfig.__post_init__ (unknown roles and unservable
+        # harnesses dropped), like every hand-built config.
+        role_backends=agent_data.get("role_backends") or {},
         fallback_model=coerce_fallback_model(agent_data.get("fallback_model", "auto")),
         refusal_fallback_model=_sections.coerce_refusal_fallback_model(
             agent_data.get("refusal_fallback_model", "")
@@ -5750,6 +5753,10 @@ class KiroCrewConfig:
             # watchdog, which is the exact defect the callback exists to end.
             on_gate_acquired: Callable[[float], None] | None = None,
             on_gate_queued: Callable[[], None] | None = None,
+            # Per-session harness request: a chat slot's own pick or a role pin
+            # (agent.role_backends). ``None`` inherits the configured default;
+            # it is an input to the one selection gate below, not a second gate.
+            acp_backend_override: str | None = None,
             **_kwargs: object,
         ) -> AcpProvider:
             wdir = Path(cwd) if cwd else _session_work_dir(session_key)
@@ -5796,6 +5803,7 @@ class KiroCrewConfig:
                 session_key,
                 self.agent.member_acp_backend,
                 self.agent.acp_backend,
+                acp_backend_override,
             )
             # Resolved BEFORE the model, and threaded into the resolution: the
             # model's namespace translation and its pin-scope check both have to

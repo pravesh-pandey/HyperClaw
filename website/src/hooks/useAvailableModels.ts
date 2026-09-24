@@ -43,14 +43,20 @@ const PLACEHOLDER: ModelInfo[] = [{ name: 'auto', description: '' }]
  * kiro-cli. Other mounted observers still fetch normally — `enabled` gates who
  * *triggers* a fetch, not what lands in the cache.
  */
-type AvailableModelsOptions = { enabled?: boolean }
+export interface AvailableModelsOptions {
+  enabled?: boolean
+  /** Scope the list to this chat session's own harness. */
+  slot?: string
+  /** Name a harness outright (`''` is Kiro CLI) -- the Settings per-role rows. */
+  backend?: string
+}
 
-export function useAvailableModelsQuery({ enabled }: AvailableModelsOptions = {}) {
+export function useAvailableModelsQuery({ enabled, slot, backend }: AvailableModelsOptions = {}) {
   const provider = useProvider()
   const isDegraded = useModelsDegraded(provider.id)
   const query = useQuery({
-    queryKey: ['available-models', provider.id],
-    queryFn: async () => withAutoFirst(await provider.fetchAvailableModels()),
+    queryKey: ['available-models', provider.id, slot ?? '', backend ?? null],
+    queryFn: async () => withAutoFirst(await provider.fetchAvailableModels(slot, backend)),
     refetchInterval: modelListRefetchInterval,
     ...(enabled === undefined ? {} : { enabled }),
   })

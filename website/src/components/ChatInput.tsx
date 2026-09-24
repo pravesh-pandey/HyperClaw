@@ -144,6 +144,7 @@ import { useMeasuredHeight } from '../hooks/useMeasuredHeight'
 
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from './ui/dropdown-menu'
 import { i18nT } from '../i18n/t'
+import { AcpBackendIcon, acpBackendLabel } from './AcpBackend'
 import { fmtDateFields, fmtPercent } from '../i18n/format'
 import SessionRefStrip from './SessionRefStrip'
 import type { SessionRef } from '../utils/sessionRefs'
@@ -632,6 +633,7 @@ interface ChatInputProps {
   onReasoningEffortClick?: (rect: DOMRect, trigger: HTMLElement) => void
   separateEffort?: boolean
   providerId?: string
+  backendId?: string
   /** Invoked when an @-mention picks a file or directory. `kind` defaults to
    *  'file'. `token` is the exact composer text the pick inserted (e.g.
    *  "@src/pages/"), computed against the picker's search root — the staging
@@ -1004,6 +1006,7 @@ function ChatInput({
   onReasoningEffortClick,
   separateEffort,
   providerId: _providerId,
+  backendId,
   onFileSelect,
   onFileOpen,
   project,
@@ -5289,6 +5292,15 @@ function ChatInput({
                     ? i18nT('components.chatInput.model_inherited_default', { name: modelName })
                     : i18nT('components.chatInput.model_2', { name: modelName })}
             >
+              {backendId !== undefined && (
+                <>
+                  <span className="inline-flex items-center gap-1 shrink-0 text-text" title={acpBackendLabel(backendId)}>
+                    <AcpBackendIcon id={backendId} />
+                    <span className="truncate max-w-[100px]">{acpBackendLabel(backendId)}</span>
+                  </span>
+                  <span className="opacity-30 select-none shrink-0" aria-hidden="true">·</span>
+                </>
+              )}
               <span className="truncate max-w-[180px]">
                 {modelIsJevRouted ? i18nT('components.modelDropdownList.auto_jev') : modelName}
               </span>

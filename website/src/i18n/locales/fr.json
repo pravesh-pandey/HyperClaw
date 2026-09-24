@@ -7397,7 +7397,24 @@
       "pin_model_unavailable": "<model/> n’est pas proposé pour le moment",
       "set_default_for_agent": "Épingler <model/> à l’agent <agent/> (remplace la valeur par défaut globale)",
       "set_default_for_new_sessions": "Valeur par défaut globale pour les nouvelles sessions…",
-      "type_to_filter": "Saisir pour filtrer…"
+      "type_to_filter": "Saisir pour filtrer…",
+      "provider": "Fournisseur",
+      "provider_list": "Liste des fournisseurs",
+      "loading_providers": "Chargement des fournisseurs…",
+      "could_not_load_providers": "Impossible de charger les fournisseurs.",
+      "invalid_backend": "Ce fournisseur ne peut pas être sélectionné dans cette version.",
+      "backend_unavailable": "Ce fournisseur n’est pas disponible sur cette machine.",
+      "backend_unavailable_with_command": "Ce fournisseur n’est pas disponible sur cette machine. Installez-le avec : {{command}}",
+      "missing_components": "Absent de cette machine : {{components}}",
+      "missing_components_with_command": "Absent de cette machine : {{components}}. Installez-le avec : {{command}}",
+      "installed_restart_required": "Installé sur cette machine, mais la passerelle doit redémarrer avant son utilisation.",
+      "kiro_cli": "Kiro CLI",
+      "claude_code": "Claude Code",
+      "codex": "Codex",
+      "opencode": "OpenCode",
+      "kas_kiro_agent": "KAS (kiro-agent)",
+      "same_as_chat": "Identique au chat",
+      "backend_switch_busy": "Terminez ou arrêtez le tour en cours avant de changer de fournisseur."
     },
     "monacoCodeBlock": {
       "close_editor": "Fermer l'éditeur",
@@ -14778,7 +14795,10 @@
         "message_font_size_desc": "Taille de police de la conversation, dans toutes les sessions : texte des messages, code, tableaux, réponses suggérées et zone de saisie du message. La largeur de contenu compacte s'élargit en proportion. La barre latérale, la liste des sessions et le reste de l'interface ne sont pas affectés.",
         "remove_the_agents_pin": "Retirer son épingle",
         "failed_to_clear_agent_model_pin": "Impossible de retirer le modèle épinglé de l’agent ({{error}}). Réessaie.",
-        "failed_to_clear_agent_model_pin_no_reason": "Impossible de retirer le modèle épinglé de l’agent. Réessaie."
+        "failed_to_clear_agent_model_pin_no_reason": "Impossible de retirer le modèle épinglé de l’agent. Réessaie.",
+        "failed_to_save_provider": "Échec de l’enregistrement du fournisseur",
+        "background_provider": "Fournisseur en arrière-plan",
+        "subagent_provider": "Fournisseur de sous-agent"
       },
       "computerUsePanel": {
         "accessibility": "Accessibilité",

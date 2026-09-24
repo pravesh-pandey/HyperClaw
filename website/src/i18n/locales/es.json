@@ -7397,7 +7397,24 @@
       "pin_model_unavailable": "<model/> no se ofrece en este momento",
       "set_default_for_agent": "Fijar <model/> en el agente <agent/> (anula el valor predeterminado global)",
       "set_default_for_new_sessions": "Valor predeterminado global para las nuevas sesiones…",
-      "type_to_filter": "Escribe para filtrar…"
+      "type_to_filter": "Escribe para filtrar…",
+      "provider": "Proveedor",
+      "provider_list": "Lista de proveedores",
+      "loading_providers": "Cargando proveedores…",
+      "could_not_load_providers": "No se pudieron cargar los proveedores.",
+      "invalid_backend": "Este proveedor no se puede seleccionar en esta compilación.",
+      "backend_unavailable": "Este proveedor no está disponible en esta máquina.",
+      "backend_unavailable_with_command": "Este proveedor no está disponible en esta máquina. Instálalo con: {{command}}",
+      "missing_components": "Falta en esta máquina: {{components}}",
+      "missing_components_with_command": "Falta en esta máquina: {{components}}. Instálalo con: {{command}}",
+      "installed_restart_required": "Está instalado en esta máquina, pero la puerta de enlace debe reiniciarse antes de usarlo.",
+      "kiro_cli": "Kiro CLI",
+      "claude_code": "Claude Code",
+      "codex": "Codex",
+      "opencode": "OpenCode",
+      "kas_kiro_agent": "KAS (kiro-agent)",
+      "same_as_chat": "Igual que el chat",
+      "backend_switch_busy": "Termina o detén el turno actual antes de cambiar de proveedor."
     },
     "monacoCodeBlock": {
       "close_editor": "Cerrar el editor",
@@ -14778,7 +14795,10 @@
         "message_font_size_desc": "Tamaño de fuente de la conversación, en todas las sesiones: texto de los mensajes, código, tablas, respuestas sugeridas y el cuadro de entrada de mensajes. El ancho de contenido compacto crece en proporción. La barra lateral, la lista de sesiones y el resto de la interfaz no se ven afectados.",
         "remove_the_agents_pin": "Quitar su fijación",
         "failed_to_clear_agent_model_pin": "No se pudo quitar el modelo fijado del agente ({{error}}). Inténtalo de nuevo.",
-        "failed_to_clear_agent_model_pin_no_reason": "No se pudo quitar el modelo fijado del agente. Inténtalo de nuevo."
+        "failed_to_clear_agent_model_pin_no_reason": "No se pudo quitar el modelo fijado del agente. Inténtalo de nuevo.",
+        "failed_to_save_provider": "No se pudo guardar el proveedor",
+        "background_provider": "Proveedor en segundo plano",
+        "subagent_provider": "Proveedor de subagente"
       },
       "computerUsePanel": {
         "accessibility": "Accesibilidad",

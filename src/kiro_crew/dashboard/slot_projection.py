@@ -282,6 +282,7 @@ class SlotProjection:
             # above: never a write source.
             "served_model": slot.served_model,
             "reasoning_effort": slot.reasoning_effort,
+            "acp_backend": slot.acp_backend,
             "mode": slot.mode,
             "surface": slot.mode,
             "workspace": slot.workspace,

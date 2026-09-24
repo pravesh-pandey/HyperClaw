@@ -255,6 +255,7 @@ import { openPanelView, claimAppAutoOpen } from '../hooks/usePanelTabs'
 import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
 import { useAvailableModels } from '../hooks/useAvailableModels'
 import { filterInteractiveModels, legacyCodexEffort, modelWithoutEffort, shouldSeparateModelEffort, switchGroupedModel, useModelPickerConfigured, useModelPickerHiddenModelsQuery } from '../hooks/useInteractiveModels'
+import { effectiveBackend, pickerBackend, useConfiguredBackend } from '../hooks/useConfiguredBackend'
 import { isUnpinnedModel, JEV_ROUTE_MODEL, jevRouteOffered, jevRouteShownModel, withJevRoute } from '../lib/jevRoute'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useAgents } from '../hooks/useAgents'
@@ -521,6 +522,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const deleteTerminalSession = useDeleteTerminalSession()
   const deleteTerminalSessionRef = useRef(deleteTerminalSession)
   deleteTerminalSessionRef.current = deleteTerminalSession
+  // The harness new sessions start on; a slot that picked none runs on it.
+  const configuredBackend = useConfiguredBackend()
   const [searchParams, setSearchParams] = useSearchParams()
   // Declared with the other top-of-component hooks because the ?sid= URL-sync
   // effect reads it (mobile replaces rather than pushes a session switch), and
@@ -587,6 +590,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // Reveal eligible completed replies while recovery is offered, including an
   // older reply the user chose to read aloud. Slot identity prevents bleed-over.
   const [voiceRecoverySlot, setVoiceRecoverySlot] = useState<string | null>(null)
+  // Must stay BELOW `activeSlot` (a component-scope const read during render).
+  // `activeSlotPickerBackend` is set only for a slot on a NON-default harness,
+  // so every other slot shares the default model list's cache entry.
+  const activeSlotAcpBackend = slots.find(s => s.key === activeSlot)?.acp_backend
+  const activeSlotPickerBackend = pickerBackend(activeSlotAcpBackend, configuredBackend)
   // tool_call_ids in THIS slot that have a live MCP App render payload. Passed
   // to TurnBlock so app-bearing rows (which mount an interactive iframe) never
   // fold into a collapsible pane — collapsing hides the app, and re-expanding
@@ -948,7 +956,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   }, [dispatch])
   const { open: agentDropdown, setOpen: setAgentDropdown, filter: agentFilter, setFilter: setAgentFilter, dropdownRef: agentDropdownRef, inputRef: agentInputRef, filtered: filteredAgentsByName } = useFilteredDropdown(effectiveAgents)
   const filteredAgents = filteredAgentsByName
-  const localModels = useAvailableModels()
+  const localModels = useAvailableModels({ backend: activeSlotPickerBackend })
   // A peer-bound session's shelf must offer the PEER's rosters. Both hooks above
   // read THIS machine same-origin, so a remote session left on them would list
   // crews and models that do not exist over there — accepted by the picker, then
@@ -8183,6 +8191,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               stopState={currentSlot?.stop_state}
               approvalMode={displayMode}
               providerId={provider.id}
+              // A remote-bound session runs on the peer's harness, which this
+              // machine's config does not name, so no harness chip is shown.
+              backendId={remoteCrew.isRemote ? undefined : effectiveBackend(currentSlot?.acp_backend, configuredBackend)}
               reasoningEffort={effectiveEffort}
               separateEffort={effortSupported}
               onReasoningEffortClick={effortSupported ? (rect) => { setReasoningEffortBtnRect(rect); setReasoningEffortDropdown(!reasoningEffortDropdown) } : undefined}
@@ -8295,6 +8306,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 setFilter={setModelFilter}
                 modelVisibilityError={hiddenModelsQ.isError}
                 onRetryModelVisibility={() => hiddenModelsQ.refetch()}
+                slot={activeSlot}
+                backendId={remoteCrew.isRemote ? undefined : effectiveBackend(currentSlot?.acp_backend, configuredBackend)}
+                providerSwitchable={!remoteCrew.isRemote}
                 onManageModels={modelPickerConfigured ? undefined : () => {
                   setModelDropdown(false)
                   navigate(settingsPath({ tab: 'chat', sub: 'models', highlight: 'key:dashboard.model_picker_hidden_models' }))

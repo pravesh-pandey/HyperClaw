@@ -1544,6 +1544,11 @@ export interface AcpBackendProbe {
   }
 }
 
+export interface AcpBackendResponse {
+  backends: AcpBackendProbe[]
+  configured: string
+}
+
 let _sessionExpiredShown = false
 
 /**
@@ -4030,7 +4035,14 @@ export const api = {
       body: form,
     }).then(j) as Promise<{ ok?: boolean; staged?: boolean; token?: string; error?: string }>
   },
-  models: () => fetch('/api/models').then(j),
+  models: (slot?: string, backend?: string) => {
+    const query = backend !== undefined
+      ? '?backend=' + encodeURIComponent(backend)
+      : slot
+        ? '?slot=' + encodeURIComponent(slot)
+        : ''
+    return fetch('/api/models' + query).then(j)
+  },
   chatSlotSelectionCapabilities: (slot: string) =>
     fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/selection-capabilities').then(j) as Promise<{
       known: boolean
@@ -4039,8 +4051,17 @@ export const api = {
       effort_levels?: string[]
       model_effort_pair_ids?: boolean
     }>,
-  effortLevels: (slot?: string) =>
-    fetch('/api/effort-levels' + (slot ? '?slot=' + encodeURIComponent(slot) : '')).then(j) as Promise<string[]>,
+  // `backend` names a harness outright, for the Settings per-role controls that
+  // ask about a harness no session is running. Effort ladders are per-harness
+  // (Codex has no `default` rung, Claude does), so a static list would offer
+  // levels the adapter refuses. `backend` wins over `slot`, matching /api/models.
+  effortLevels: (slot?: string, backend?: string) => {
+    const params = new URLSearchParams()
+    if (backend !== undefined) params.set('backend', backend)
+    else if (slot) params.set('slot', slot)
+    const query = params.toString()
+    return fetch('/api/effort-levels' + (query ? '?' + query : '')).then(j) as Promise<string[]>
+  },
   // Bounded HERE, not per initiator: react-query dedupes on the key, so the
   // weakest initiator would otherwise decide whether the promise is bounded.
   slashCommands: (signal?: AbortSignal) =>
@@ -4057,6 +4078,8 @@ export const api = {
     }).then(j) as Promise<{ ok?: boolean; agent?: string; agent_kind?: 'member' | 'template' | ''; workspace?: string }>,
   chatSlotModel: (slot: string, model: string) =>
     post('/api/chat/slots/' + encodeURIComponent(slot) + '/model', { model }).then(j) as Promise<{ ok?: boolean; model?: string }>,
+  chatSlotBackend: (slot: string, backend: string) =>
+    post('/api/chat/slots/' + encodeURIComponent(slot) + '/backend', { backend }, slot).then(j) as Promise<{ ok: true; backend: string; model: string; effort: string }>,
   /** This slot's auto-compact threshold override (null = follows the global). */
   chatSlotAutocompact: (slot: string) =>
     fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/autocompact').then(j) as Promise<{ pct: number | null; global_pct: number; min: number; max: number }>,
@@ -4465,7 +4488,7 @@ export const api = {
   // Owner-only, and absent (404) on an older gateway. Both of those reach the
   // caller as a rejection, which is the intended signal: "no probe information",
   // to be treated as fail-open rather than as a verdict.
-  acpBackends: () => fetch('/api/acp-backends').then(j) as Promise<{ backends: AcpBackendProbe[] }>,
+  acpBackends: () => fetch('/api/acp-backends').then(j) as Promise<AcpBackendResponse>,
   // Re-take ONE backend's verdict with this gateway's cached absence dropped first,
   // and answer with that backend's row in the shape `acpBackends` sends -- so the
   // caller splices it into the list it already holds rather than keeping a second

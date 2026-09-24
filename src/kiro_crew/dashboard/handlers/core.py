@@ -64,6 +64,7 @@ from kiro_crew.config.sections import (
     DECISION_MODEL_ROUTE_TIERS,
     FOLDER_SORT_MODES,
     JUDGE_PROVIDERS,
+    ROLE_BACKEND_KEYS,
     STT_LANGUAGE_AUTO,
 )
 from kiro_crew.context_management import RESULT_FILE_MAX_BYTES
@@ -2328,12 +2329,38 @@ def _active_provider_name() -> str:
         return ""
 
 
+def _validation_backend_for(path_key: str) -> str | None:
+    """The harness a model pin at *path_key* must be validated against.
+
+    A per-role pin may name a model only the ROLE's harness serves -- the whole
+    point of ``agent.role_backends``. ``None`` means "no opinion": the pin is
+    not a role pin, so any live provider's catalog answers, as before.
+    FILESYSTEM IO -- never call this on the loop.
+    """
+    prefix = "agent.role_models."
+    if not path_key.startswith(prefix):
+        return None
+    try:
+        return KiroCrewConfig.load().agent.resolve_backend(path_key[len(prefix) :])
+    except Exception:  # pragma: no cover - config load is resilient
+        return None
+
+
+def _role_backend_is_inherited(role: str) -> bool:
+    """True when *role* has no harness of its own and borrows the chat one."""
+    try:
+        return role not in KiroCrewConfig.load().agent.role_backends
+    except Exception:  # pragma: no cover - config load is resilient
+        return False
+
+
 def _validate_role_model(
     value: str,
     request: web.Request,
     provider: str | None = None,
     *,
     backend: str | None = None,
+    path_key: str = "",
 ) -> str | None:
     """Reject a per-role model pin the account cannot use; ``None`` = allow.
 
@@ -2367,6 +2394,19 @@ def _validate_role_model(
         return None
     if model_is_unusable(value, advertised):
         usable = ", ".join(advertised[:8]) or "auto"
+        # A role borrowing the chat harness has its pin measured against THAT
+        # catalog. "Not available on your account" is the wrong diagnosis for a
+        # cross-harness pin: the remedy is the role's own harness pin, so name it.
+        prefix = "agent.role_models."
+        role = path_key[len(prefix) :] if path_key.startswith(prefix) else ""
+        if role and _role_backend_is_inherited(role):
+            harness = backend or "kiro"
+            return (
+                f"{value!r} is not a model the {harness!r} harness serves, and the "
+                f"{role} role is currently using it. Set this role's Provider first "
+                f"(agent.role_backends.{role}), then pick its model — or choose one "
+                f"of: {usable}, or 'auto'."
+            )
         return f"{value!r} is not available on your account; choose one of: {usable}, or 'auto'."
     return None
 
@@ -2400,6 +2440,26 @@ def _selectable_acp_backends() -> list[str]:
     return selectable_backend_values()
 
 
+#: Grammar for a model id written through the config PATCH. Charset only -- no
+#: whitespace or shell metacharacters -- because membership is unknowable up
+#: front. ``/``-separated segments are allowed for harnesses whose ids carry a
+#: routing namespace (OpenCode's ``provider/model``); an empty, leading,
+#: trailing or doubled separator is not, and every segment starts with a letter
+#: or digit so no segment can read as ``.`` or ``..``.
+_MODEL_ID_PATTERN = r"^(?:[A-Za-z0-9][A-Za-z0-9._\-\[\]]*(?:/[A-Za-z0-9][A-Za-z0-9._\-\[\]]*)*)?$"
+
+
+def _selectable_role_backends() -> list[str]:
+    """Selectable harnesses for a per-role pin.
+
+    Delegates to :func:`_selectable_acp_backends` so a harness an edition
+    registers reaches the role pins the moment it reaches the chat pin. ``""``
+    is Kiro's real wire id and an explicit role pin; the absent key (written by
+    a ``null`` PATCH) is the separate inherit sentinel.
+    """
+    return _selectable_acp_backends()
+
+
 _EDITABLE_CONFIG: dict[str, dict] = {
     "agent.provider": {"type": "enum", "values": ["acp"]},
     # Which ACP agent drives a session: "" = kiro-cli, "kas" = kiro-agent.
@@ -2414,11 +2474,11 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # fixed list: the real vocabulary is whatever the live kiro-cli advertises
     # (/api/models spawns it to find out), and it spans both canonical registry
     # keys ("opus-4.8-1m") and kiro's own ids ("claude-opus-4.8"). So this is a
-    # grammar check instead — model-id charset only, no separators or shell
-    # metacharacters — and an unknown-but-well-formed id is rejected downstream
+    # grammar check instead (``_MODEL_ID_PATTERN``: model-id charset, ``/`` only
+    # between segments, no shell metacharacters) — and an unknown-but-well-formed id is rejected downstream
     # by kiro itself rather than silently accepted here. "auto"/"" = defer to
     # the agent config / kiro's own default.
-    "agent.model": {"type": "str", "max_len": 64, "pattern": r"^[A-Za-z0-9._\-\[\]]*$"},
+    "agent.model": {"type": "str", "max_len": 64, "pattern": _MODEL_ID_PATTERN},
     # Per-task-class model overrides. Same grammar as agent.model (the real
     # vocabulary is whatever the backend advertises). "" / "auto" defers to the
     # chat default. `validate_fn` additionally rejects a well-formed id the
@@ -2426,13 +2486,13 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     "agent.role_models.background": {
         "type": "str",
         "max_len": 64,
-        "pattern": r"^[A-Za-z0-9._\-\[\]]*$",
+        "pattern": _MODEL_ID_PATTERN,
         "validate_fn": _validate_role_model,
     },
     "agent.role_models.subagent": {
         "type": "str",
         "max_len": 64,
-        "pattern": r"^[A-Za-z0-9._\-\[\]]*$",
+        "pattern": _MODEL_ID_PATTERN,
         "validate_fn": _validate_role_model,
     },
     # Throttle-exhaustion fallback model. Single value: "auto" (default) defers
@@ -2443,7 +2503,7 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     "agent.fallback_model": {
         "type": "str",
         "max_len": 64,
-        "pattern": r"^[A-Za-z0-9._\-\[\]]*$",
+        "pattern": _MODEL_ID_PATTERN,
         "validate_fn": _validate_role_model,
     },
     # Content-filter (refusal) fallback model. Single value: "" (default)
@@ -2454,7 +2514,7 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     "agent.refusal_fallback_model": {
         "type": "str",
         "max_len": 64,
-        "pattern": r"^[A-Za-z0-9._\-\[\]]*$",
+        "pattern": _MODEL_ID_PATTERN,
         "validate_fn": _validate_role_model,
     },
     "agent.reasoning_effort": {"type": "enum", "values": ["", *EFFORT_LEVELS]},
@@ -2462,6 +2522,13 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # default; "" = inherit. Applies only on reasoning-capable models.
     "agent.role_efforts.background": {"type": "enum", "values": ["", *EFFORT_LEVELS]},
     "agent.role_efforts.subagent": {"type": "enum", "values": ["", *EFFORT_LEVELS]},
+    # Per-task-class harness overrides, paired with role_models, offering the
+    # same values as agent.acp_backend from the same derivation. ``""`` pins
+    # Kiro; ``null`` removes the key so the role inherits the chat harness.
+    **{
+        f"agent.role_backends.{role}": {"type": "enum", "values_fn": _selectable_role_backends}
+        for role in ROLE_BACKEND_KEYS
+    },
     "agent.approval_mode": {"type": "enum", "values": ["auto", "interactive"]},
     # How long an AD-HOC auto-approve grant lasts. Editable from Settings because
     # every value here still ends: the timed ones are capped at the SafetyOverride
@@ -2717,7 +2784,7 @@ for _tier in DECISION_MODEL_ROUTE_TIERS:
     _EDITABLE_CONFIG[f"decisions.model_route.{_tier}"] = {
         "type": "str",
         "max_len": 64,
-        "pattern": r"^[A-Za-z0-9._\-\[\]]*$",
+        "pattern": _MODEL_ID_PATTERN,
         "validate_fn": _validate_role_model,
     }
 
@@ -2743,7 +2810,7 @@ _EDITABLE_CONFIG["decisions.nudge_wake.provider"] = {
 _EDITABLE_CONFIG["decisions.nudge_wake.llm_model"] = {
     "type": "str",
     "max_len": 64,
-    "pattern": r"^[A-Za-z0-9._\-\[\]]*$",
+    "pattern": _MODEL_ID_PATTERN,
     "validate_fn": _validate_role_model,
 }
 
@@ -2856,7 +2923,10 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
         # when an edition registers a backend. A static ``values`` list would be
         # read before that happened.
         allowed = list(spec["values_fn"]()) if "values_fn" in spec else spec["values"]
-        if value not in allowed:
+        # ``null`` removes a role-backend key so the role inherits the chat
+        # harness; accepted only on those paths, where ``""`` is a Kiro pin.
+        role_backend_reset = path_key.startswith("agent.role_backends.") and value is None
+        if not role_backend_reset and value not in allowed:
             return _deny(f"invalid value, must be one of {allowed}", f"{path_key}={value}")
     elif spec["type"] == "int":
         try:
@@ -2903,7 +2973,9 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
             # a validator at all. A ``validate_fn`` added later takes the provider as
             # its third argument for this reason.
             provider = await asyncio.to_thread(_active_provider_name)
-            reason = validate_fn(value, request, provider)
+            # A per-role pin validates against the ROLE's harness, not chat's.
+            backend = await asyncio.to_thread(_validation_backend_for, path_key)
+            reason = validate_fn(value, request, provider, backend=backend, path_key=path_key)
             if reason:
                 return _deny(reason, f"{path_key}={value}")
     elif spec["type"] == "dict":
@@ -3092,7 +3164,13 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
                 if not isinstance(nxt, dict):
                     raise ValueError(f"config section '{part}' is not an object")
                 section = nxt
-            section[parts[-1]] = value
+            if value is None and path_key.startswith("agent.role_backends."):
+                # Deletion is the persisted form of "inherit the chat harness";
+                # a stored null would be dropped on load and leave a raw-config
+                # reader disagreeing with the effective config.
+                section.pop(parts[-1], None)
+            else:
+                section[parts[-1]] = value
             return data
 
         try:

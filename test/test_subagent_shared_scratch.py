@@ -1194,6 +1194,9 @@ class TestEveryProcessSpawnSeamIsAccountedFor:
             "app-owned review workers; no chat session is their parent"
         ),
         "knowledge/llm_pool.py": "knowledge-indexing helper process; no session parent",
+        "acp/adapter_catalog.py": (
+            "offline picker catalog handshake; no prompt, torn down at once, no session parent"
+        ),
     }
 
     @classmethod

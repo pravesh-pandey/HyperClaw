@@ -141,13 +141,17 @@ def select_provider_backend(
     session_key: str | None,
     member_backend: str,
     configured_default: str,
+    requested_backend: str | None = None,
 ) -> str:
     """The per-session half of the ONE backend-selection gate (H3/H13).
 
-    Precedence: the member-DM auto-route, then the configured default. The
-    member arm goes through :func:`resolve_selected_backend` — the same
+    Precedence: the member-DM auto-route, then a caller's per-session request
+    (a chat slot's own harness pick, or a role pin from
+    ``agent.role_backends``), then the configured default. The member and
+    request arms go through :func:`resolve_selected_backend` — the same
     governance/selectability gate the persisted field crosses, so a denied or
-    unknown value degrades to kiro and the member thread runs as plain chat.
+    unknown value degrades to kiro and the session runs as plain chat.
+    ``None`` means "no request"; ``""`` is a real request for kiro-cli.
 
     Lives here rather than inline in ``create_provider_factory`` so the
     factory body stays a single selection CALL with no branching of its own:
@@ -165,6 +169,8 @@ def select_provider_backend(
             member_backend,
         )
         return backend
+    if requested_backend is not None:
+        return resolve_selected_backend(requested_backend)
     return configured_default
 
 

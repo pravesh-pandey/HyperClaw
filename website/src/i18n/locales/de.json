@@ -7289,7 +7289,24 @@
       "pin_model_unavailable": "<model/> wird derzeit nicht angeboten",
       "set_default_for_agent": "<model/> an den Agenten <agent/> anheften (überschreibt den globalen Standard)",
       "set_default_for_new_sessions": "Globaler Standard für neue Sitzungen…",
-      "type_to_filter": "Zum Filtern tippen…"
+      "type_to_filter": "Zum Filtern tippen…",
+      "provider": "Anbieter",
+      "provider_list": "Anbieterliste",
+      "loading_providers": "Anbieter werden geladen…",
+      "could_not_load_providers": "Anbieter konnten nicht geladen werden.",
+      "invalid_backend": "Dieser Anbieter kann in diesem Build nicht ausgewählt werden.",
+      "backend_unavailable": "Dieser Anbieter ist auf diesem Rechner nicht verfügbar.",
+      "backend_unavailable_with_command": "Dieser Anbieter ist auf diesem Rechner nicht verfügbar. Installieren mit: {{command}}",
+      "missing_components": "Auf diesem Rechner fehlt: {{components}}",
+      "missing_components_with_command": "Auf diesem Rechner fehlt: {{components}}. Installieren mit: {{command}}",
+      "installed_restart_required": "Auf diesem Rechner installiert, aber das Gateway muss vor der Verwendung neu gestartet werden.",
+      "kiro_cli": "Kiro CLI",
+      "claude_code": "Claude Code",
+      "codex": "Codex",
+      "opencode": "OpenCode",
+      "kas_kiro_agent": "KAS (kiro-agent)",
+      "same_as_chat": "Wie im Chat",
+      "backend_switch_busy": "Beenden oder stoppen Sie den aktuellen Durchgang, bevor Sie den Anbieter wechseln."
     },
     "monacoCodeBlock": {
       "close_editor": "Editor schließen",
@@ -14562,7 +14579,10 @@
         "message_font_size_desc": "Schriftgröße für die Konversation, in jeder Sitzung: Nachrichtentext, Code, Tabellen, Antwortvorschläge und die Nachrichteneingabe. Die kompakte Inhaltsbreite wächst entsprechend mit. Seitenleiste, Sitzungsliste und der Rest der Oberfläche sind nicht betroffen.",
         "remove_the_agents_pin": "Anheftung entfernen",
         "failed_to_clear_agent_model_pin": "Angeheftetes Modell des Agenten konnte nicht entfernt werden ({{error}}). Versuch es erneut.",
-        "failed_to_clear_agent_model_pin_no_reason": "Angeheftetes Modell des Agenten konnte nicht entfernt werden. Versuch es erneut."
+        "failed_to_clear_agent_model_pin_no_reason": "Angeheftetes Modell des Agenten konnte nicht entfernt werden. Versuch es erneut.",
+        "failed_to_save_provider": "Anbieter konnte nicht gespeichert werden",
+        "background_provider": "Hintergrund-Anbieter",
+        "subagent_provider": "Subagent-Anbieter"
       },
       "computerUsePanel": {
         "accessibility": "Bedienungshilfen",

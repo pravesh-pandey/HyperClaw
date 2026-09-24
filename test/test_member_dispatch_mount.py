@@ -963,6 +963,27 @@ class TestSelectProviderBackend:
 
         assert select_provider_backend(MEMBER_KEY, "no-such-backend", "") == ""
 
+    def test_a_per_session_request_beats_the_configured_default(self):
+        from kiro_crew.members import select_provider_backend
+
+        assert select_provider_backend("dashboard_abc", "kas", "", "codex") == "codex"
+
+    def test_an_explicit_kiro_request_is_honoured(self):
+        # "" is kiro-cli's real wire id, so it is a request, not an absence.
+        from kiro_crew.members import select_provider_backend
+
+        assert select_provider_backend("dashboard_abc", "kas", "codex", "") == ""
+
+    def test_an_unservable_request_degrades_to_kiro(self):
+        from kiro_crew.members import select_provider_backend
+
+        assert select_provider_backend("dashboard_abc", "kas", "codex", "no-such") == ""
+
+    def test_the_member_route_still_wins_over_a_request(self):
+        from kiro_crew.members import select_provider_backend
+
+        assert select_provider_backend(MEMBER_KEY, "kas", "", "codex") == "kas"
+
 
 class TestSessionHistoryWriteProtected:
     """created_by feeds authorize_target, so its storage must not be

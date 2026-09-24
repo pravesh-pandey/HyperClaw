@@ -66,10 +66,19 @@ interface CachedModels {
  *  expired (older than the TTL), or unusable. Fully guarded: SSR (no
  *  localStorage), disabled storage, quota, and corrupt JSON all degrade to null
  *  so the caller falls through to auto-only. */
-function readCachedModels(): ModelInfo[] | null {
+/** The default list keeps the unsuffixed key; a list for a NAMED harness (a
+ *  session or role on a non-default one) gets its own entry, so the two never
+ *  overwrite each other. `''` is Kiro CLI, spelled `kiro` in the key. */
+function modelCacheKey(backend?: string): string {
+  return backend === undefined
+    ? MODELS_CACHE_KEY
+    : `${MODELS_CACHE_KEY}.${encodeURIComponent(backend || 'kiro')}`
+}
+
+function readCachedModels(backend?: string): ModelInfo[] | null {
   try {
     if (typeof localStorage === 'undefined') return null
-    const raw = localStorage.getItem(MODELS_CACHE_KEY)
+    const raw = localStorage.getItem(modelCacheKey(backend))
     if (!raw) return null
     const parsed = JSON.parse(raw) as CachedModels
     if (!parsed || typeof parsed.ts !== 'number' || !Array.isArray(parsed.models)) return null
@@ -97,9 +106,10 @@ function readCachedModels(): ModelInfo[] | null {
  *  it. */
 for (const m of readCachedModels() ?? []) learnWindow(m.name, m.contextWindow ?? 0)
 
-/** Drop the last-good list. Called when `agent.acp_backend` changes: the cache
- *  is keyed by nothing but time, so after a switch it still holds the PREVIOUS
- *  backend's ids. If the new backend's first `/api/models` then fails (a cold
+/** Drop the last-good DEFAULT list. Called when `agent.acp_backend` changes: the
+ *  default entry answers "whatever harness is configured", so after a switch it
+ *  still holds the PREVIOUS backend's ids. (An entry keyed by a named harness is
+ *  still right for that harness and is kept.) If the new backend's first `/api/models` then fails (a cold
  *  `--list-models` spawn past the gateway timeout is the common case), the
  *  degraded path would serve that list and the picker would offer ids the new
  *  backend rejects. Dropping it makes the degraded answer auto-only, which every
@@ -107,7 +117,7 @@ for (const m of readCachedModels() ?? []) learnWindow(m.name, m.contextWindow ??
 export function clearCachedModels(): void {
   try {
     if (typeof localStorage === 'undefined') return
-    localStorage.removeItem(MODELS_CACHE_KEY)
+    localStorage.removeItem(modelCacheKey())
   } catch {
     /* storage disabled — nothing to drop */
   }
@@ -115,11 +125,11 @@ export function clearCachedModels(): void {
 
 /** Persist a live model list with a timestamp. Best-effort — storage errors
  *  (quota, disabled, SSR) are swallowed so caching never breaks the picker. */
-function writeCachedModels(models: ModelInfo[]): void {
+function writeCachedModels(models: ModelInfo[], backend?: string): void {
   try {
     if (typeof localStorage === 'undefined') return
     const payload: CachedModels = { ts: Date.now(), models }
-    localStorage.setItem(MODELS_CACHE_KEY, JSON.stringify(payload))
+    localStorage.setItem(modelCacheKey(backend), JSON.stringify(payload))
   } catch {
     /* quota exceeded / storage disabled — non-fatal */
   }
@@ -374,14 +384,14 @@ export class AcpAdapter implements ProviderAdapter {
     return { ok: false as const, error: 'plugin update is not supported' }
   }
 
-  async fetchAvailableModels(): Promise<ModelInfo[]> {
+  async fetchAvailableModels(slot?: string, backend?: string): Promise<ModelInfo[]> {
     try {
-      const models = await api.models()
+      const models = await api.models(slot, backend)
       if (!Array.isArray(models) || models.length === 0) {
         // Empty/non-array success: NOT a live list — keep polling, serve the
         // last-good live list if we have one, else auto-only.
         markModelsDegraded(this.id, true)
-        return readCachedModels() ?? this._defaultModels()
+        return readCachedModels(backend) ?? this._defaultModels()
       }
       const result = models.map((m: RawModel) => {
         // Prefer the backend's resolved window over the bundled snapshot: the
@@ -398,7 +408,7 @@ export class AcpAdapter implements ProviderAdapter {
           rateMultiplier: rowMultiplier(m),
         }
       })
-      writeCachedModels(result) // remember this good live list for next hiccup
+      writeCachedModels(result, backend) // remember this good live list for next hiccup
       markModelsDegraded(this.id, false) // live success → self-heal can stop polling
       return result
     } catch {
@@ -406,7 +416,7 @@ export class AcpAdapter implements ProviderAdapter {
       // Serve the last-good live list if we have one, else auto-only. Never
       // surface canonical registry keys — the ACP CLI rejects them (-32603).
       markModelsDegraded(this.id, true)
-      return readCachedModels() ?? this._defaultModels()
+      return readCachedModels(backend) ?? this._defaultModels()
     }
   }
 

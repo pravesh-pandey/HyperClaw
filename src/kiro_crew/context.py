@@ -26,7 +26,7 @@ from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.agent import _prompt_path, is_managed_prompt
 from kiro_crew.agent_discovery import agent_skill_globs
 from kiro_crew.agent_sdk.drivers import acp as acp_driver
-from kiro_crew.agent_sdk.provider_identity import PROVIDER_ACP, is_claude_code
+from kiro_crew.agent_sdk.provider_identity import PROVIDER_ACP, PROVIDER_CLAUDE_CODE, is_claude_code
 from kiro_crew.agent_spec_format import iter_agent_spec_files, parse_agent_spec_text
 from kiro_crew.board_tag_grammar import is_grantable_tag_id
 from kiro_crew.config import live
@@ -3043,6 +3043,39 @@ def build_session_replay(
     return replay.translate(_MULTIBYTE_TABLE)
 
 
+def _adapter_prompt_names(provider_type: str) -> tuple[str, str] | None:
+    """``(command form, title form)`` naming an adapted harness in the persona prompt.
+
+    The shared Kiro Crew persona prompt names ``kiro-cli`` and Kiro; a session on
+    an adapted harness is told its own name instead. A table rather than a
+    transform of the label, because ``"opencode".capitalize()`` is not what that
+    product is called and the model repeats back whatever it is told. ``None``
+    for the Kiro-family labels (and any label not listed): their prompt is used
+    as written.
+
+    The label vocabulary lives in ``acp.types``, whose package ``__init__``
+    imports the ACP client, so it is reached at CALL time: this module is on the
+    context-build path and must not drag the transport layer into its imports.
+    """
+    from kiro_crew.acp.types import (
+        PROVIDER_LABEL_CLAUDE,
+        PROVIDER_LABEL_CODEX,
+        PROVIDER_LABEL_DEEPSEEK,
+        PROVIDER_LABEL_GOOSE,
+        PROVIDER_LABEL_OPENCODE,
+        PROVIDER_LABEL_PI,
+    )
+
+    return {
+        PROVIDER_LABEL_CLAUDE: ("claude code", "Claude"),
+        PROVIDER_LABEL_CODEX: ("codex", "Codex"),
+        PROVIDER_LABEL_OPENCODE: ("opencode", "OpenCode"),
+        PROVIDER_LABEL_PI: ("pi", "Pi"),
+        PROVIDER_LABEL_GOOSE: ("goose", "Goose"),
+        PROVIDER_LABEL_DEEPSEEK: ("deepseek", "DeepSeek"),
+    }.get(provider_type)
+
+
 def _skills_injection_plan(
     agent: str | None, *, is_cc: bool, project_dir: str | Path | None = None
 ) -> tuple[bool, list[str]]:
@@ -3299,10 +3332,21 @@ class ContextBuilder:
         else:
             cfg = KiroCrewConfig.load()
             provider = cfg.agent.provider
+            from kiro_crew.acp.types import PROVIDER_LABEL_BY_BACKEND
+
+            # An adapted chat harness has its prompt's "Kiro" renamed to its own
+            # name (``_adapter_prompt_names``), so it must not then be told to
+            # answer to "Kiro" through {bot_name} either.
+            adapted = (
+                _adapter_prompt_names(PROVIDER_LABEL_BY_BACKEND.get(cfg.agent.acp_backend, ""))
+                is not None
+            )
             # The joined spelling is the {bot_name} value the prompt
             # substitutes, not prose about the product: respelling it would
             # change what the model is told to answer to.
-            self._bot_name = "KiroCrew" if is_claude_code(provider) else "Kiro"  # brand-ok
+            self._bot_name = (
+                "KiroCrew" if is_claude_code(provider) or adapted else "Kiro"  # brand-ok
+            )
         # Register default memory in the workspace cache
         _memory_stores[_DEFAULT_KEY] = self.memory
 
@@ -4791,6 +4835,7 @@ class ContextBuilder:
         is_cc: bool,
         private_owner: bool,
         session_start: bool,
+        provider_type: str = "",
     ) -> str:
         """Return the agent contract for the ``[AGENT SYSTEM PROMPT]`` block, or "".
 
@@ -4801,17 +4846,21 @@ class ContextBuilder:
         """
         is_custom = bool(agent) and agent != "kirocrew"
         agent_prompt: str
-        if is_cc and (not is_custom or not private_owner):
-            # CC gets the same Kiro Crew persona prompt as kiro — including
-            # the Output Format rules (diff blocks, image embeds, OPTIONS)
-            # which are dashboard UI contracts, not kiro-specific. Only the
-            # kiro-cli *branding* references are rewritten to claude code.
+        adapter_names = _adapter_prompt_names(provider_type) or (
+            _adapter_prompt_names(PROVIDER_CLAUDE_CODE) if is_cc else None
+        )
+        if adapter_names is not None and (not is_custom or not private_owner):
+            # An adapted harness gets the same Kiro Crew persona prompt as kiro
+            # — including the Output Format rules (diff blocks, image embeds,
+            # OPTIONS), which are dashboard UI contracts, not kiro-specific. Only
+            # the kiro-cli *branding* references are rewritten to its own name.
+            command_name, title_name = adapter_names
             try:
                 pp = _prompt_path(mode=mode)
                 agent_prompt = pp.read_text(encoding="utf-8")
-                agent_prompt = agent_prompt.replace("kiro-cli", "claude code")
-                agent_prompt = re.sub(r"\bKiro\b", "Claude", agent_prompt)
-                agent_prompt = re.sub(r"\bkiro\b", "claude", agent_prompt)
+                agent_prompt = agent_prompt.replace("kiro-cli", command_name)
+                agent_prompt = re.sub(r"\bKiro\b", title_name, agent_prompt)
+                agent_prompt = re.sub(r"\bkiro\b", title_name.lower(), agent_prompt)
                 agent_prompt = agent_prompt.strip()
             except Exception:
                 agent_prompt = ""
@@ -5064,6 +5113,7 @@ class ContextBuilder:
                     is_cc=is_cc,
                     private_owner=bool(_private_owner),
                     session_start=True,
+                    provider_type=provider_type,
                 )
             )
             if agent_prompt:
@@ -5272,6 +5322,7 @@ class ContextBuilder:
                 is_cc=is_cc,
                 private_owner=bool(_private_owner),
                 session_start=False,
+                provider_type=provider_type,
             )
             if _agent_prompt:
                 parts.append(

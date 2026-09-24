@@ -111,6 +111,14 @@ class TestAugmentedPath:
         toolbox_idx = next(i for i, d in enumerate(dirs) if ".toolbox/bin" in d)
         assert local_idx < toolbox_idx
 
+    def test_includes_npm_user_global_bin(self) -> None:
+        """A non-login gateway still sees npm's common user-global prefix."""
+        result = augmented_path("/usr/bin")
+        dirs = result.split(os.pathsep)
+        npm_global = str(Path.home() / ".npm-global" / "bin")
+        assert npm_global in dirs
+        assert dirs.index(npm_global) < dirs.index("/usr/bin")
+
     def test_includes_both_macos_install_prefixes(self) -> None:
         """``/usr/local/bin`` belongs beside ``/opt/homebrew/bin``, not instead of it.
 
