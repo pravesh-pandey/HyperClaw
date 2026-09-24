@@ -859,6 +859,12 @@ export default [
               '\\\\n$',
               // An HTML/SVG tag fragment used for content sniffing (`'<svg'`).
               '</?[a-z][a-z0-9]*$',
+              // The DSML function-call control token's opening delimiter
+              // (`'<｜DSML｜'`), used only to find protocol markup a DeepSeek-style
+              // adapter leaked into assistant text so the renderer can strip it.
+              // A wire token, never rendered; the full-width bars keep it out of
+              // the tag-fragment shape above.
+              '^<｜DSML｜$',
               // Tokens with no letters at all: separators, punctuation, symbols, numbers.
               // Written as an ASCII class on purpose. `[^\p{L}]` looks equivalent but a
               // JS regex without the `u` flag reads `\p{L}` as the character class
