@@ -78,7 +78,7 @@ export function filterInteractiveModels(
     // retain a description only if every advertised effort variant agrees;
     // a price remains level-specific and cannot describe the grouped row.
     const base = baseModels.get(name)
-    return [{ ...(base ?? model), name, ...(!base && name !== model.name ? { description: pairDescriptions.get(name) || '', rateMultiplier: undefined } : {}) }]
+    return [{ ...(base ?? model), name, ...(!base && name !== model.name ? { displayName: undefined, description: pairDescriptions.get(name) || '', rateMultiplier: undefined } : {}) }]
   })
 }
 

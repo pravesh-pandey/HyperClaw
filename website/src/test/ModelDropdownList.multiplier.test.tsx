@@ -8,13 +8,14 @@
  * no badge rather than fall back to 1x.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { act, fireEvent, render, renderHook, screen } from '@testing-library/react'
 
 // `/all` for the bn/de catalogs: `../i18n` registers English only, and an
 // unregistered language resolves to `en`, which renders Latin digits.
 import { i18next } from '../i18n/all'
 import ModelDropdownList, { formatMultiplier, costTier } from '../components/ModelDropdownList'
 import { withAutoFirst } from '../providers/modelList'
+import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
 
 /** The badge for `name`, or null when that row rendered none. */
 function badgeFor(name: string): HTMLElement | null {
@@ -104,6 +105,26 @@ describe('costTier — brackets the default user’s own multipliers as "standar
 })
 
 describe('ModelDropdownList — badge rendering', () => {
+  it('finds a model by its advertised version or its wire ID', () => {
+    const models = [{ name: 'opus', displayName: 'Opus 5.5' }, { name: 'sonnet' }]
+    const { result } = renderHook(() => useFilteredDropdown(models))
+    act(() => result.current.setFilter('5.5'))
+    expect(result.current.filtered).toEqual([models[0]])
+    act(() => result.current.setFilter('OPUS'))
+    expect(result.current.filtered).toEqual([models[0]])
+  })
+
+  it('shows the advertised version alongside the alias and selects the wire ID', () => {
+    const onSelect = vi.fn()
+    const models = [{ name: 'opus', displayName: 'Opus 5.5' }]
+    render(<ModelDropdownList models={models} activeModel="opus" onSelect={onSelect} />)
+    const option = screen.getByRole('option', { name: /Opus 5.5/ })
+    expect(option).toHaveTextContent('opus')
+    expect(option).toHaveAttribute('aria-selected', 'true')
+    fireEvent.click(option)
+    expect(onSelect).toHaveBeenCalledWith('opus')
+  })
+
   it('shows the multiplier the backend reported', () => {
     render(<ModelDropdownList
       models={[{ name: 'claude-opus-5', rateMultiplier: 2.2 }]}

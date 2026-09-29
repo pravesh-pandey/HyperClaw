@@ -80,23 +80,23 @@ describe('interactive model visibility', () => {
 
   it('uses an advertised base model for its own description and price', () => {
     const models = [
-      { name: 'gpt-6-sol[low]', description: 'Low effort', rateMultiplier: 0.5 },
-      { name: 'gpt-6-sol', description: 'Workhorse model', rateMultiplier: 1 },
+      { name: 'gpt-6-sol[low]', displayName: 'Sol (low)', description: 'Low effort', rateMultiplier: 0.5 },
+      { name: 'gpt-6-sol', displayName: 'Sol', description: 'Workhorse model', rateMultiplier: 1 },
     ]
     expect(filterInteractiveModels(models, [], [], true)).toEqual([
-      { name: 'gpt-6-sol', description: 'Workhorse model', rateMultiplier: 1 },
+      { name: 'gpt-6-sol', displayName: 'Sol', description: 'Workhorse model', rateMultiplier: 1 },
     ])
   })
 
   it('keeps a description shared by all effort variants without a base row', () => {
     const models = [
-      { name: 'gpt-6-astra[medium]', description: 'Frontier reasoning', rateMultiplier: 1.5 },
+      { name: 'gpt-6-astra[medium]', displayName: 'Astra (medium)', description: 'Frontier reasoning', rateMultiplier: 1.5 },
       { name: 'gpt-6-astra[high]', description: 'Frontier reasoning', rateMultiplier: 2 },
       { name: 'gpt-6-sol[low]', description: 'Fast responses' },
       { name: 'gpt-6-sol[high]', description: 'Deep reasoning' },
     ]
     expect(filterInteractiveModels(models, [], [], true)).toEqual([
-      { name: 'gpt-6-astra', description: 'Frontier reasoning', rateMultiplier: undefined },
+      { name: 'gpt-6-astra', displayName: undefined, description: 'Frontier reasoning', rateMultiplier: undefined },
       { name: 'gpt-6-sol', description: '', rateMultiplier: undefined },
     ])
   })

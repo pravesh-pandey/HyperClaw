@@ -119,6 +119,8 @@ export interface ProviderLabels {
 
 export interface ModelInfo {
   name: string
+  /** Backend-advertised label; name remains the ID sent when selecting. */
+  displayName?: string
   description: string
   contextWindow?: number
   supportsExtendedContext?: boolean

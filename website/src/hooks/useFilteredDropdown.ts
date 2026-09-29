@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { isTouchDevice } from '../utils/isTouchDevice'
 
 /** Shared hook for filtered dropdown behavior (open/close, filter, click-outside, keyboard). */
-export function useFilteredDropdown<T extends { name: string }>(items: T[]) {
+export function useFilteredDropdown<T extends { name: string; displayName?: string }>(items: T[]) {
   const [open, setOpen] = useState(false)
   const [filter, setFilter] = useState('')
   const dropdownRef = useRef<HTMLDivElement>(null)
@@ -28,7 +28,7 @@ export function useFilteredDropdown<T extends { name: string }>(items: T[]) {
   }, [open])
 
   const filtered = filter
-    ? items.filter(item => item.name.toLowerCase().includes(filter.toLowerCase()))
+    ? items.filter(item => [item.name, item.displayName].some(value => value?.toLowerCase().includes(filter.toLowerCase())))
     : items
 
   return { open, setOpen, filter, setFilter, dropdownRef, inputRef, filtered }

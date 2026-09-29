@@ -266,6 +266,11 @@ its own once the cache refreshes with a list that carries it.
   not evidence of missing support. Its effort override stays keyed as `auto`
   across startup and is validated against those advertised levels without
   converting the inherited model into an explicit pin.
+- Picker rows carry the backend's `display_name` alongside the selectable model
+  ID, so floating Claude aliases can show the version the adapter advertises.
+  Filtering matches either field; selection and persistence still use the ID.
+  Missing labels leave the ID visible, with no inferred version. Grouped Codex
+  rows omit effort-specific labels unless a base-model row supplies its own.
 - Codex advertises `model[effort]` pairs, but its `model` config option accepts the
   base ID and its `reasoning_effort` option accepts the level. The live capability
   marks only backends in `ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS` for pair grouping;

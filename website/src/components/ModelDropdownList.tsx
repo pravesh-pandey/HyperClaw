@@ -17,7 +17,7 @@ import { i18nT } from '../i18n/t'
  * only the shapes are pinned.
  */
 export type ModelItem =
-  Pick<ModelInfo, 'name'> & Partial<Pick<ModelInfo, 'description' | 'rateMultiplier'>>
+  Pick<ModelInfo, 'name'> & Partial<Pick<ModelInfo, 'displayName' | 'description' | 'rateMultiplier'>>
 
 /** The multiplier Auto is pinned at, and the baseline the badges are relative to. */
 const BASELINE = 1
@@ -25,7 +25,7 @@ const BASELINE = 1
 /**
  * What a row SHOWS for its model.
  *
- * Every real row shows its own id, verbatim: the id is what the user
+ * Every real row keeps its own id, verbatim, alongside any advertised label: the id is what the user
  * cross-references against `kiro-cli chat --list-models`, the composer chip and
  * the config file, so translating or prettifying it would break that match.
  *
@@ -155,6 +155,9 @@ export default function ModelDropdownList({ models, activeModel, onSelect, loadi
                   the keyboard-nav tests select rows by the value that is sent, and a
                   translated label would make that selector locale-dependent. */}
               <span data-model-name data-model-id={m.name} className={`text-[13px] font-mono font-semibold truncate ${active ? 'text-accent' : 'text-text'}`}>{rowLabel(m.name)}</span>
+              {m.name !== 'auto' && m.name !== JEV_ROUTE_MODEL && m.displayName && m.displayName !== m.name && (
+                <span className="text-[12px] text-muted">{m.displayName}</span>
+              )}
               {active && <span className="text-accent text-[12px]"><Check className="lucide-inline" /></span>}
               {/* Credit multiplier. Rendered only when the backend reported a
                   usable one — a cold-start or pre-feature cached row has none,

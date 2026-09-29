@@ -162,6 +162,7 @@ interface RawPlugin {
 /** Raw model entry from /api/models. */
 interface RawModel {
   model_name: string
+  display_name?: string
   description?: string
   /** Backend-resolved context window. Two spellings because the endpoint has two
    *  branches: the kiro path returns `kiro-cli --list-models` rows verbatim
@@ -403,6 +404,7 @@ export class AcpAdapter implements ProviderAdapter {
         learnWindow(m.model_name, reported)
         return {
           name: m.model_name,
+          displayName: typeof m.display_name === 'string' ? m.display_name.trim() || undefined : undefined,
           description: m.description || '',
           contextWindow: reported || MODEL_TOKENS[m.model_name] || DEFAULT_CONTEXT,
           rateMultiplier: rowMultiplier(m),
