@@ -16,7 +16,7 @@ import pytest
 from kiro_crew.acp.client import AcpAuthRequired
 from kiro_crew.acp.session_handle import AcpSessionHandle
 from kiro_crew.acp.session_provider import AcpSessionProvider
-from kiro_crew.acp.types import ACP_BACKEND_CLAUDE, AcpEvent, TurnUsage
+from kiro_crew.acp.types import ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, AcpEvent, TurnUsage
 from kiro_crew.providers.acp import AcpProvider
 
 
@@ -508,6 +508,51 @@ class TestEffortControl:
         # Default: the session advertises an 'effort' option (modern adapter).
         provider._client.supports_config_option = MagicMock(return_value=True)
         return provider
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("model", ["", "auto"])
+    async def test_codex_inherited_model_effort_round_trip(self, model):
+        provider = self._effort_provider(backend=ACP_BACKEND_CODEX, model=model)
+        provider._client.get_valid_effort_levels.return_value = ["low", "medium", "high"]
+
+        assert provider.supports_effort()
+        assert await provider.change_effort("high")
+        provider._client.set_config_option.assert_awaited_once_with("reasoning_effort", "high")
+        provider._client.set_config_option.reset_mock()
+        await provider._apply_initial_effort()
+        provider._client.set_config_option.assert_awaited_once_with("reasoning_effort", "high")
+        assert provider._client._model == model
+        assert await provider.clear_effort() is False
+        assert provider._resolve_effort() is None
+
+    def test_codex_inherited_model_requires_advertised_effort(self):
+        provider = self._effort_provider(backend=ACP_BACKEND_CODEX, model="auto")
+        provider._client.get_valid_effort_levels.return_value = []
+        provider._effort_per_model = {"auto": "high"}
+        assert not provider.supports_effort()
+        assert provider._resolve_effort() is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("model", ["", "auto"])
+    async def test_codex_factory_preserves_inherited_model_effort(self, model):
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        cfg = KiroCrewConfig()
+        cfg.agent.acp_backend = ACP_BACKEND_CODEX
+        with patch("kiro_crew.providers.acp.AcpProvider") as constructor:
+            factory = cfg.create_provider_factory()
+            factory(
+                session_key="dashboard:codex-effort",
+                model_override=model,
+                reasoning_effort_override="high",
+            )
+            overrides = constructor.call_args.kwargs["effort_per_model"]
+        assert overrides == {"auto": "high"}
+        provider = self._effort_provider(backend=ACP_BACKEND_CODEX, model="")
+        provider._client.get_valid_effort_levels.return_value = ["low", "medium", "high"]
+        provider._effort_per_model = overrides
+        await provider._apply_initial_effort()
+        provider._client.set_config_option.assert_awaited_once_with("reasoning_effort", "high")
 
     @pytest.mark.asyncio
     async def test_kiro_change_effort_pushes_slash_command_and_overlay(self):

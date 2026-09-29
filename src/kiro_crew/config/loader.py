@@ -44,6 +44,7 @@ from kiro_crew import (
     windows_acl,
 )
 from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_CODEX,
     ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION,
     resolve_cc_permission_mode,
 )
@@ -5842,8 +5843,11 @@ class KiroCrewConfig:
             # while the dashboard still shows the level the operator picked.
             _from_option = _backend in ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION
             _registry_ok = is_valid_effort(_eff) and model_supports_effort(m)
-            if m and _eff and (_from_option or _registry_ok):
-                _eff_per_model[m] = _eff
+            # Codex resolves an unpinned model at session/new; preserve the pick
+            # until its live reasoning_effort selector can validate it.
+            _codex_default = _backend == ACP_BACKEND_CODEX and m in ("", DEFAULT_MODEL)
+            if (m or _codex_default) and _eff and (_from_option or _registry_ok or _codex_default):
+                _eff_per_model[m or DEFAULT_MODEL] = _eff
             elif _eff and is_valid_effort(_eff):
                 # Single-authority drop warning: a valid requested effort is
                 # being dropped because the resolved model is empty or not

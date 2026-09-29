@@ -1521,6 +1521,13 @@ class AcpProvider(LLMProvider):
 
     # ── Reasoning-effort control ─────────────────────────────────────
 
+    def _effort_model(self) -> str:
+        """Keep Codex's inherited effort keyed consistently before and after startup."""
+        model = self._client._model
+        if self._client.backend == ACP_BACKEND_CODEX:
+            return model or DEFAULT_MODEL
+        return model
+
     def _advertised_effort_levels(self) -> list[str] | None:
         """The vocabulary this harness is the authority on, or None.
 
@@ -1530,6 +1537,10 @@ class AcpProvider(LLMProvider):
         ``None`` -- every other harness -- means the model registry answers, which
         is right where the level rides the model.
         """
+        if self._client.backend == ACP_BACKEND_CODEX and self._effort_model() == DEFAULT_MODEL:
+            # The requested model stays unpinned even after session/new resolves
+            # it. The live selector answers for that backend-selected model.
+            return self._client.get_valid_effort_levels()
         if self._client.backend not in ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION:
             return None
         return self._client.get_valid_effort_levels()
@@ -1550,6 +1561,8 @@ class AcpProvider(LLMProvider):
         its name heuristic recognises none of them, so it reports "no effort" for
         every ordinary session on such a harness and the control never appears.
         """
+        if self._client.backend == ACP_BACKEND_CODEX and self._effort_model() == DEFAULT_MODEL:
+            return bool(self._client.get_valid_effort_levels())
         if self._client.backend in ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION:
             return self._client.supports_config_option(
                 effort_config_option_id(self._client.backend)
@@ -1575,7 +1588,7 @@ class AcpProvider(LLMProvider):
         # whose ceiling is ``xhigh`` is this harness's ``xhigh`` -- and a filter
         # that ran first would drop the very level the live push applied.
         return resolve_effort_for_model(
-            self._client._model,
+            self._effort_model(),
             slot_overrides=self._effort_per_model,
             defaults=self._effort_defaults,
             levels=self._advertised_effort_levels(),
@@ -1770,7 +1783,7 @@ class AcpProvider(LLMProvider):
         model does not support effort, or when this harness is in neither set and
         so has no effort channel at all.
         """
-        model = self._client._model
+        model = self._effort_model()
         if not self.supports_effort():
             logger.info(
                 "change_effort skipped — no effort level applies to this session (backend=%s model=%s)",
@@ -1909,10 +1922,10 @@ class AcpProvider(LLMProvider):
         without one, the level of the model left is pushed live but never stored.
         """
         overrides = self._effort_per_model
-        carried = overrides.get(self._client._model, "")
+        carried = overrides.get(self._effort_model(), "")
         await self._client.set_model(model)
         try:
-            own = overrides.get(self._client._model) or overrides.get(model, "")
+            own = overrides.get(self._effort_model()) or overrides.get(model, "")
             if own or not carried:
                 await self.reapply_live_effort(own)
             elif self.supports_effort():
@@ -1946,7 +1959,7 @@ class AcpProvider(LLMProvider):
         neither the file nor this map, so the caller commits no slot value and
         resets nothing.
         """
-        model = self._client._model
+        model = self._effort_model()
         if not self.supports_effort():
             return False
         cleared = self._effort_per_model.pop(model, None)

@@ -30,6 +30,11 @@ surfaces, out-of-range values are clamped with a warning rather than raising, an
 a malformed section degrades to defaults so a hand-edited file cannot prevent the
 gateway from starting.
 
+The ACP factory preserves an effort override for an inherited Codex model under
+the `auto` key. Its live `reasoning_effort` selector validates that override
+after session creation; the factory cannot reject it merely because the model
+has not been resolved yet. See [model selection](../common/model-selection.md).
+
 ## Orchestration prompt contract
 
 `config/prompt.md` and `config/prompt-orchestrator.md` guide direct work and

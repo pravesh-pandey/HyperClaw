@@ -261,6 +261,11 @@ its own once the cache refreshes with a list that carries it.
   a separate effort button, using its advertised levels, whether the backend is
   Claude, Codex, Pi, or another capable ACP harness. A session that reports no
   effort support gets no effort control. The model picker never owns that slider.
+- An inherited Codex model is still effort-capable when its live
+  `reasoning_effort` selector advertises levels. The empty/`auto` model pin is
+  not evidence of missing support. Its effort override stays keyed as `auto`
+  across startup and is validated against those advertised levels without
+  converting the inherited model into an explicit pin.
 - Codex advertises `model[effort]` pairs, but its `model` config option accepts the
   base ID and its `reasoning_effort` option accepts the level. The live capability
   marks only backends in `ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS` for pair grouping;
