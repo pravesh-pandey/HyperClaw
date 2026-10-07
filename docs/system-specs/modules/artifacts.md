@@ -1000,6 +1000,11 @@ adding a parallel watcher (see `kiro_crew.knowledge.artifact_ingest`):
   **unconditionally**, comparing the artifact store against
   `artifact_item_state`: ingest what is missing or changed, drop state for
   artifacts that no longer exist. `created` is now reported for logging only.
+  - **A manual Sync runs the same pass.** `POST /api/knowledge/sources/{id}/sync`
+    on the artifact source calls `ArtifactKnowledgeSync.resync()` and stamps
+    `synced` or `error` from its result. The source's `artifact://` uri is not a
+    URL, so the handler's agent URL-fetch fallback must never see it; with
+    auto-ingest off the route answers 409 `artifact_ingest_disabled`.
   - **Converged is free.** `ingest_artifact` already skips unchanged content, so
     the steady state spends no extraction calls and logs at debug.
   - **Removals are judged against every artifact, not the eligible kinds.**

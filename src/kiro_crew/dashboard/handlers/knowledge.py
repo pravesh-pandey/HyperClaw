@@ -32,7 +32,7 @@ from kiro_crew.dashboard.handlers.files import (
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.knowledge.agent_fetch import fetch_url_content
 from kiro_crew.knowledge.agent_source import add_agent_document
-from kiro_crew.knowledge.artifact_ingest import ArtifactKnowledgeSync
+from kiro_crew.knowledge.artifact_ingest import ARTIFACT_SOURCE_TYPE, ArtifactKnowledgeSync
 from kiro_crew.knowledge.chunker import HeadingAwareChunker
 from kiro_crew.knowledge.connectors.base import BaseConnector
 from kiro_crew.knowledge.connectors.local_folder import LocalFolderConnector
@@ -1592,6 +1592,23 @@ async def _sync_source_body(request: web.Request) -> web.Response:
         )
         _sel_log("source.sync.local_file", source_id=source_id)
         return web.json_response({"synced": False, "status": "syncing", "source_id": source_id})
+
+    # The aggregate artifact source has no URL: its sync is the artifact
+    # reconcile pass, never the agent URL fetch below (which fails on
+    # ``artifact://`` and leaves the row in a terminal 'error').
+    if source["source_type"] == ARTIFACT_SOURCE_TYPE:
+        artifact_sync = request.app.get("artifact_knowledge_sync")
+        if artifact_sync is None:
+            return web.json_response(
+                {"error": "artifact auto-ingest is off (knowledge.auto_ingest_artifacts)",
+                 "code": "artifact_ingest_disabled", "source_id": source_id},
+                status=409)
+        ok = await artifact_sync.resync(source_id)
+        status = "synced" if ok else "error"
+        await _finalize_sync_status(
+            store, source_id, status, from_statuses=("syncing", "error", "pending"))
+        _sel_log("source.sync.artifact", source_id=source_id)
+        return web.json_response({"synced": ok, "status": status, "source_id": source_id})
 
     # Agent-assisted sync: fetch in background, no chat session needed
     uri = source["uri"] or ""

@@ -129,3 +129,53 @@ class TestSyncLocalFile:
             assert resp.status == 200
             status = await _await_sync_status(store, sid, "error")
         assert status == "error"
+
+
+class TestSyncArtifactSource:
+    """The aggregate artifact source (``artifact://``) has no URL to fetch: a
+    manual Sync runs the artifact reconcile pass, never the agent URL fetch,
+    which failed with 'No URL provided' and left the row in a terminal 'error'."""
+
+    @staticmethod
+    def _add_errored_artifact_source(store) -> str:
+        sid = store.add_source(name="Artifacts", source_type="artifact", uri="artifact://")
+        store.db.execute("UPDATE sources SET sync_status = 'error' WHERE id = ?", (sid,))
+        store.db.commit()
+        return sid
+
+    @pytest.mark.asyncio
+    async def test_sync_runs_the_reconcile_not_agent_fetch(self, store, monkeypatch):
+        monkeypatch.setattr(kh, "fetch_url_content", AsyncMock(
+            side_effect=AssertionError("artifact source must not use fetch_url_content")))
+        sid = self._add_errored_artifact_source(store)
+        app = _make_app(store, pipeline=MagicMock())
+        app["artifact_knowledge_sync"] = MagicMock(resync=AsyncMock(return_value=True))
+
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(f"/api/knowledge/sources/{sid}/sync")
+            assert resp.status == 200
+            assert (await resp.json())["status"] == "synced"
+
+        app["artifact_knowledge_sync"].resync.assert_awaited_once_with(sid)
+        assert await _await_sync_status(store, sid, "synced") == "synced"
+
+    @pytest.mark.asyncio
+    async def test_a_failed_reconcile_reports_error(self, store):
+        sid = self._add_errored_artifact_source(store)
+        app = _make_app(store, pipeline=MagicMock())
+        app["artifact_knowledge_sync"] = MagicMock(resync=AsyncMock(return_value=False))
+
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(f"/api/knowledge/sources/{sid}/sync")
+            assert (await resp.json())["status"] == "error"
+
+    @pytest.mark.asyncio
+    async def test_auto_ingest_off_is_a_named_refusal(self, store, monkeypatch):
+        monkeypatch.setattr(kh, "fetch_url_content", AsyncMock(
+            side_effect=AssertionError("artifact source must not use fetch_url_content")))
+        sid = self._add_errored_artifact_source(store)
+
+        async with TestClient(TestServer(_make_app(store, pipeline=MagicMock()))) as client:
+            resp = await client.post(f"/api/knowledge/sources/{sid}/sync")
+            assert resp.status == 409
+            assert (await resp.json())["code"] == "artifact_ingest_disabled"

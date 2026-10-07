@@ -1050,7 +1050,15 @@ class ArtifactKnowledgeSync:
         )
         self._reconcile_task = asyncio.create_task(self._run_reconcile(source_id))
 
-    async def _run_reconcile(self, source_id: str) -> None:
+    async def resync(self, source_id: str) -> bool:
+        """Run the reconcile pass now: a manual Sync of the aggregate source.
+
+        The artifact source has no URL, so the dashboard's generic sync fallback
+        (agent URL fetch) cannot serve it. Returns False when the pass failed.
+        """
+        return await self._run_reconcile(source_id)
+
+    async def _run_reconcile(self, source_id: str) -> bool:
         async with self._lock:
             try:
                 ingested, removed, deferred = await reconcile_artifacts(
@@ -1058,12 +1066,12 @@ class ArtifactKnowledgeSync:
                 )
             except Exception:
                 logger.exception("artifact KB reconcile failed")
-                return
+                return False
         if not (ingested or removed or deferred):
             # The steady state. Logged at debug so an already-converged store
             # does not write a line on every boot.
             logger.debug("artifact KB reconcile: already in sync")
-            return
+            return True
         logger.info(
             "artifact KB reconcile: %d ingested, %d removed, %d deferred to a later start",
             ingested,
@@ -1086,3 +1094,4 @@ class ArtifactKnowledgeSync:
                 {"ingested": ingested, "removed": removed, "deferred": deferred}
             ),
         )
+        return True
