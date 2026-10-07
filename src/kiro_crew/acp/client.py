@@ -4396,6 +4396,20 @@ def advertised_model_ids(entries: object) -> list[str]:
     return ids
 
 
+def advertised_ids_with_pair_bases(advertised: Sequence[str] | None, backend: str) -> list[str]:
+    """Include selectable base ids when a harness advertises model/effort pairs."""
+    ids = list(advertised or ())
+    if backend not in ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS:
+        return ids
+    seen = set(ids)
+    for model_id in tuple(ids):
+        base, effort = model_registry.split_effort_suffix(model_id)
+        if effort and base not in seen:
+            ids.append(base)
+            seen.add(base)
+    return ids
+
+
 def model_is_unusable(model_id: str, advertised: Sequence[str] | None) -> bool:
     """True when *advertised* is known and excludes *model_id*.
 
@@ -4778,6 +4792,19 @@ async def _push_model_via_effort_split(driver: Any, backend: str, model_id: str)
         )
         return applied_base
     return model_id
+
+
+def _record_effort_in_resolved_model(driver: Any, backend: str, config_id: str, value: str) -> None:
+    """Keep a pair-id harness's served model in step with an accepted effort write."""
+    if backend not in ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS or config_id != effort_config_option_id(
+        backend
+    ):
+        return
+    resolved = getattr(driver, "_resolved_model_id", "")
+    if not isinstance(resolved, str) or not resolved or resolved == DEFAULT_MODEL:
+        return
+    base, _ = model_registry.split_effort_suffix(resolved)
+    driver._resolved_model_id = f"{base}[{value}]"
 
 
 def _format_acp_error(
@@ -8450,6 +8477,7 @@ class AcpClient:
             {"sessionId": self._session_id, "configId": config_id, "value": value},
         )
         await self._wait_for_response(req_id, timeout=10.0)
+        _record_effort_in_resolved_model(self, self.backend, config_id, value)
 
     # ── Dynamic Config from ACP ──
 

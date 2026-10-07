@@ -876,6 +876,7 @@ class TestEndpointPayloadShape:
                 "install_command",
                 "restart_required",
                 "auth",
+                "model_effort_pair_ids",
                 # The capability card, spread into the row rather than nested:
                 # each of these four is read on its own by the panel. What each
                 # line MEANS is pinned in ``test_backend_cards``; this file pins
@@ -927,6 +928,7 @@ class TestEndpointPayloadShape:
                 "sign_in_remedy": host_auth.declaration_for("").sign_in_remedy,
                 "signs_in_separately": False,
             },
+            "model_effort_pair_ids": False,
             # Compared against the projection for the same reason: the card is
             # DERIVED from capability membership, so a literal copy here would
             # pin today's memberships and read a deliberate capability change as
@@ -954,6 +956,8 @@ class TestEndpointPayloadShape:
         # ``selectable`` stays False here because this test PINS the live enum to
         # ``["", "kas"]`` above; it asserts the payload shape, not the registry.
         assert by_policy["codex"]["selectable"] is False
+        # Settings groups a role's Codex model[effort] rows from this flag.
+        assert by_policy["codex"]["model_effort_pair_ids"] is True
         # opencode's row is the one-component shape. The resolver is stubbed PRESENT
         # above, so this pins the installed form -- and with it that the row invents
         # neither a component nor a command when there is nothing to install.

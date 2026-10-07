@@ -330,9 +330,43 @@ class TestRoleModelValidationFollowsTheRoleHarness:
     def test_a_non_role_path_expresses_no_opinion(self, monkeypatch) -> None:
         from kiro_crew.dashboard.handlers import core
 
-        # agent.fallback_model shares the validator but is not a role pin, so it
-        # must keep resolving its harness the way it always did.
-        assert core._validation_backend_for("agent.fallback_model") is None
+        assert core._validation_backend_for("decisions.nudge_wake.llm_model") is None
+
+    @pytest.mark.parametrize("path", ["agent.fallback_model", "agent.refusal_fallback_model"])
+    def test_a_fallback_pin_is_measured_against_the_chat_harness(self, monkeypatch, path) -> None:
+        from kiro_crew.dashboard.handlers import core
+
+        cfg = KiroCrewConfig(
+            agent=AgentConfig(
+                acp_backend=ACP_BACKEND_CLAUDE,
+                role_backends={"subagent": ACP_BACKEND_CODEX},
+            )
+        )
+        monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: cfg))
+        # Only the subagent's CODEX session is live. The fallback dropdown lists
+        # the chat harness's models, so codex's catalog must not reject them.
+        request = self._request(ACP_BACKEND_CODEX, ["gpt-6-astra[low]", "gpt-6-sol[low]"])
+        backend = core._validation_backend_for(path)
+        assert backend == ACP_BACKEND_CLAUDE
+        assert core._validate_role_model("claude-opus-4-8", request, backend=backend) is None
+
+    def test_a_grouped_codex_base_pin_is_accepted_against_pair_ids(self, monkeypatch) -> None:
+        from kiro_crew.dashboard.handlers import core
+
+        cfg = KiroCrewConfig(
+            agent=AgentConfig(
+                acp_backend=ACP_BACKEND_KIRO,
+                role_backends={"subagent": ACP_BACKEND_CODEX},
+            )
+        )
+        monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: cfg))
+        # Codex advertises only pair ids; the picker stores the base. Both the
+        # base and a raw pair id must validate; a model it never serves must not.
+        request = self._request(ACP_BACKEND_CODEX, ["gpt-6-astra[low]", "gpt-6-sol[high]"])
+        backend = core._validation_backend_for("agent.role_models.subagent")
+        assert core._validate_role_model("gpt-6-sol", request, backend=backend) is None
+        assert core._validate_role_model("gpt-6-astra[low]", request, backend=backend) is None
+        assert core._validate_role_model("gpt-9-nope", request, backend=backend) is not None
 
     def test_a_codex_pin_is_not_measured_against_kiros_catalog(self, monkeypatch) -> None:
         from kiro_crew.dashboard.handlers import core

@@ -1402,8 +1402,8 @@ class TestStartKiroRuntimeModelEntitlement:
     it mid-prompt as "-32603 ... model is not available".
     """
 
-    def _kiro_provider(self, model):
-        provider = _build_provider(backend="")  # kiro backend
+    def _kiro_provider(self, model, backend=""):
+        provider = _build_provider(backend=backend)
         provider._client._work_dir = "/tmp/ws"
         provider._client._agent = "kirocrew"
         provider._client._sandbox_mode = "auto"
@@ -1414,8 +1414,8 @@ class TestStartKiroRuntimeModelEntitlement:
         provider._client._resume_session_id = ""  # straight to create_session
         return provider
 
-    async def _run(self, model, advertised, *, probe=None, probe_raises=False):
-        provider = self._kiro_provider(model)
+    async def _run(self, model, advertised, *, probe=None, probe_raises=False, backend=""):
+        provider = self._kiro_provider(model, backend)
         handle = MagicMock()
         handle.session_id = "kiro-sess-1"
         handle.store_session_config = MagicMock()
@@ -1457,6 +1457,14 @@ class TestStartKiroRuntimeModelEntitlement:
     async def test_usable_configured_model_is_applied(self):
         handle = await self._run("claude-opus-4.8", ["claude-sonnet-4.6", "claude-opus-4.8"])
         handle.set_model.assert_awaited_once_with("claude-opus-4.8")
+
+    @pytest.mark.asyncio
+    async def test_codex_grouped_base_pin_stays_bare_at_startup(self):
+        handle = await self._run(
+            "gpt-6-sol", ["gpt-6-sol[low]", "gpt-6-sol[high]"], backend="codex"
+        )
+        handle.refresh_available_models.assert_not_awaited()
+        handle.set_model.assert_awaited_once_with("gpt-6-sol")
 
     @pytest.mark.asyncio
     async def test_unknown_entitlement_still_applies(self):

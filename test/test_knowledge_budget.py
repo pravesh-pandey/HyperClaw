@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_CLAUDE, ACP_BACKEND_KIRO
 from kiro_crew.config.loader import KnowledgeConfig
 
 # --- Config defaults ---
@@ -509,6 +510,7 @@ class TestExtractionModelResolution:
         with patch("kiro_crew.config.loader.KiroCrewConfig.load") as mock_load:
             mock_load.return_value.knowledge.extraction_model = ""
             mock_load.return_value.agent.model = "claude-sonnet-4.5"
+            mock_load.return_value.agent.acp_backend = ACP_BACKEND_KIRO
             with patch("kiro_crew.agent._atomic_json_write") as mock_write:
                 with patch("kiro_crew.agent.kiro_agents_dir_path") as mock_path:
                     mock_path.return_value = Path("/tmp/agents")
@@ -516,6 +518,22 @@ class TestExtractionModelResolution:
                     _install_knowledge_agent()
                     written = mock_write.call_args[0][1]
                     assert written["model"] == "claude-sonnet-4.5"
+
+    def test_chat_model_of_another_harness_is_not_inherited(self):
+        """agent.model is an id in the CHAT harness's namespace. The spec is read
+        by kiro-cli alone, so with chat on another harness it falls back to auto
+        instead of carrying a model kiro-cli cannot serve."""
+        with patch("kiro_crew.config.loader.KiroCrewConfig.load") as mock_load:
+            mock_load.return_value.knowledge.extraction_model = ""
+            mock_load.return_value.agent.model = "another-harness-model"
+            mock_load.return_value.agent.acp_backend = ACP_BACKEND_CLAUDE
+            with patch("kiro_crew.agent._atomic_json_write") as mock_write:
+                with patch("kiro_crew.agent.kiro_agents_dir_path") as mock_path:
+                    mock_path.return_value = Path("/tmp/agents")
+                    from kiro_crew.agent import _install_knowledge_agent
+                    _install_knowledge_agent()
+                    written = mock_write.call_args[0][1]
+                    assert written["model"] == "auto"
 
     def test_explicit_extraction_model_overrides(self):
         """When extraction_model is set, it overrides agent.model."""

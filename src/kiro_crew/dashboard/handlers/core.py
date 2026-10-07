@@ -2333,17 +2333,24 @@ def _validation_backend_for(path_key: str) -> str | None:
     """The harness a model pin at *path_key* must be validated against.
 
     A per-role pin may name a model only the ROLE's harness serves -- the whole
-    point of ``agent.role_backends``. ``None`` means "no opinion": the pin is
-    not a role pin, so any live provider's catalog answers, as before.
+    point of ``agent.role_backends``. The fallback pins are picked from the chat
+    harness's list, so they are measured against it: with a role on another
+    harness, "any live provider" could be that role's session and reject every
+    chat model (H12). ``None`` means "no opinion": any live provider answers.
     FILESYSTEM IO -- never call this on the loop.
     """
     prefix = "agent.role_models."
-    if not path_key.startswith(prefix):
-        return None
     try:
+        if path_key in _CHAT_HARNESS_MODEL_PINS:
+            return KiroCrewConfig.load().agent.acp_backend
+        if not path_key.startswith(prefix):
+            return None
         return KiroCrewConfig.load().agent.resolve_backend(path_key[len(prefix) :])
     except Exception:  # pragma: no cover - config load is resilient
         return None
+
+
+_CHAT_HARNESS_MODEL_PINS = frozenset({"agent.fallback_model", "agent.refusal_fallback_model"})
 
 
 def _role_backend_is_inherited(role: str) -> bool:
@@ -2379,7 +2386,7 @@ def _validate_role_model(
     """
     if not value or value == "auto":
         return None
-    from kiro_crew.acp.client import model_is_unusable
+    from kiro_crew.acp.client import advertised_ids_with_pair_bases, model_is_unusable
     from kiro_crew.dashboard.chat_handlers import _model_rejected_reason
 
     reason = _model_rejected_reason(value, provider=provider)
@@ -2392,6 +2399,11 @@ def _validate_role_model(
     )
     if advertised is None:
         return None
+    # A pair-id harness (Codex) advertises only `model[effort]` ids, but the
+    # picker stores the BASE id and applies effort on its own row. Accept the
+    # base by folding each advertised pair to its base before the check, so a
+    # grouped pick is not rejected as unentitled. Raw pair ids stay valid.
+    advertised = advertised_ids_with_pair_bases(advertised, backend or "")
     if model_is_unusable(value, advertised):
         usable = ", ".join(advertised[:8]) or "auto"
         # A role borrowing the chat harness has its pin measured against THAT

@@ -7835,18 +7835,26 @@ def _install_knowledge_agent() -> None:
     extraction runs on the same model as chat). If the user sets
     knowledge.extraction_model explicitly, that model is used instead —
     allowing a cheaper model for extraction without changing the chat default.
+
+    This spec is read by kiro-cli alone, and agent.model is an id in the CHAT
+    harness's namespace, so it is inherited only when chat runs on Kiro: the
+    pool can sit on kiro-cli while chat is on another harness (a runtime-driven
+    background harness keeps it there), and that harness's model would fail
+    every extraction with "model is not available".
     """
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KIRO
     from kiro_crew.config.loader import KiroCrewConfig
 
     path = kiro_agents_dir_path() / _KNOWLEDGE_AGENT_FILENAME
 
-    # Resolve model: knowledge.extraction_model > agent.model > "auto"
+    # Resolve model: knowledge.extraction_model > agent.model (Kiro chat) > "auto"
     try:
         cfg = KiroCrewConfig.load()
         model = cfg.knowledge.extraction_model.strip()
-        if not model:
+        if not model and cfg.agent.acp_backend == ACP_BACKEND_KIRO:
             # Use the user's default model (same as chat).
-            model = cfg.agent.model or "auto"
+            model = cfg.agent.model
+        model = model or "auto"
     except Exception:
         model = "auto"
 

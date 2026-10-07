@@ -279,7 +279,16 @@ its own once the cache refreshes with a list that carries it.
   as their base model; an unset effort control remains Default until the user
   chooses an override. Picking a model stores the base ID; the backend's existing
   effort reapply path keeps a slot override in force. Other backends' model IDs,
-  including Claude window suffixes such as `[1m]`, remain intact.
+  including Claude window suffixes such as `[1m]`, remain intact. The level is
+  whatever the harness advertises (Codex adds `ultra`), so the suffix grammar
+  mirrors `_SAFE_EFFORT_RE` rather than a fixed list. The Settings role and
+  fallback selectors group the same way, reading the harness's
+  `model_effort_pair_ids` from `GET /api/acp-backends` because they have no slot;
+  they hide nothing, and a role's effort stays on its own `agent.role_efforts` row.
+  An existing pair pin stays listed as itself until the user picks a base row.
+  Entitlement checks for a Codex base pick include bases derived from advertised
+  pairs, and startup plus live switches send that base ID unchanged; choosing the
+  first advertised pair would silently select its `low` effort.
 - `GET /api/models` and `GET /api/effort-levels` answer for ONE harness:
   `?backend=<id>` names it outright (the Settings per-role rows), `?slot=<key>` scopes
   to that chat session's own pick, and with neither the configured
@@ -321,7 +330,10 @@ its own once the cache refreshes with a list that carries it.
   an explicit Kiro pin; a `null` PATCH deletes the key so the role inherits again. A
   role's model pin is validated against the ROLE's harness catalog, and a refusal on a
   role that is only borrowing the chat harness names `agent.role_backends.<role>` as
-  the fix rather than reporting an entitlement problem.
+  the fix rather than reporting an entitlement problem. `agent.fallback_model` and
+  `agent.refusal_fallback_model` are validated against the chat harness
+  (`agent.acp_backend`), the catalog their Settings dropdown lists, so a live session
+  of a role pinned to another harness cannot reject every chat model.
 - **Entitlement checks** always use the shared predicate
   `acp.client.model_is_unusable(id, advertised)` together with
   `advertised_model_ids(...)`. It is one predicate on purpose: two spellings of "can

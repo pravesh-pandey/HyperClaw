@@ -1428,6 +1428,8 @@ export interface AcpBackendProbe {
    * that is guaranteed to error.
    */
   restart_required: boolean
+  /** Advertised ids encode effort as `model[level]`; absent on an older gateway. */
+  model_effort_pair_ids?: boolean
   /**
    * How this harness gets its credential, and what to tell an operator who has
    * not given it one. OPTIONAL because a gateway that predates this field sends

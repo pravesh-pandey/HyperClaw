@@ -1270,6 +1270,16 @@ class TestLivePathModelEntitlement:
         handle.set_model.assert_awaited_once_with("claude-opus-4.8")
 
     @pytest.mark.asyncio
+    async def test_codex_grouped_base_pick_matches_advertised_pairs(self):
+        provider, handle = self._provider(["gpt-6-astra[low]", "gpt-6-astra[high]"])
+        provider._runtime.acp_backend = "codex"
+
+        await provider.set_model("gpt-6-astra")
+
+        handle.refresh_available_models.assert_not_awaited()
+        handle.set_model.assert_awaited_once_with("gpt-6-astra")
+
+    @pytest.mark.asyncio
     async def test_unknown_advertised_set_still_applied(self):
         """A backend that advertises nothing must not have every switch refused."""
         provider, handle = self._provider([])

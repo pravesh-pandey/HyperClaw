@@ -6,7 +6,7 @@ import { api } from '../api/client'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
-import { filterInteractiveModels, legacyCodexEffort, normalizeHiddenModels, shouldSeparateModelEffort, switchGroupedModel, useModelPickerConfigured, useModelPickerHiddenModelsQuery } from '../hooks/useInteractiveModels'
+import { filterInteractiveModels, groupModelEffortPairs, legacyCodexEffort, normalizeHiddenModels, shouldSeparateModelEffort, switchGroupedModel, useModelPickerConfigured, useModelPickerHiddenModelsQuery } from '../hooks/useInteractiveModels'
 
 const MODELS = [
   { name: 'auto', description: '' },
@@ -149,5 +149,12 @@ describe('interactive model visibility', () => {
     expect(chatPane).toContain('onClick={() => hiddenModelsQ.refetch()}')
     expect(bulkSwitcher).not.toContain('filterInteractiveModels(')
     expect(settings).not.toContain('filterInteractiveModels(')
+    // Settings groups Codex model[effort] pairs but hides nothing.
+    expect(settings).toContain('groupModelEffortPairs(models)')
+  })
+
+  it('groups pairs, including harness-specific levels, without hiding models', () => {
+    const rows = ['a[low]', 'a[ultra]', 'b[max]', 'claude[1m]'].map(name => ({ name, description: '' }))
+    expect(groupModelEffortPairs(rows).map(m => m.name)).toEqual(['a', 'b', 'claude[1m]'])
   })
 })

@@ -66,6 +66,8 @@ from kiro_crew.acp.client import (
     _loggable_request_id,
     _push_model_via_effort_split,
     _raise_acp_error,
+    _record_effort_in_resolved_model,
+    advertised_ids_with_pair_bases,
     advertised_model_ids,
     catalog_row_would_drop,
     compaction_failure_detail,
@@ -2180,7 +2182,10 @@ class AcpSessionHandle:
         reset-to-default. Explicit user picks raise instead, upstream in
         ``AcpSessionProvider.set_model`` / ``AcpClient.set_model``.
         """
-        resolved = resolve_usable_model(model_id, self._advertised_model_ids())
+        resolved = resolve_usable_model(
+            model_id,
+            advertised_ids_with_pair_bases(self._advertised_model_ids(), self._runtime.acp_backend),
+        )
         if not resolved:
             # Inherit the backend default — nothing to send. For the ephemeral
             # _bg session the current model IS session/new's served default.
@@ -2430,6 +2435,7 @@ class AcpSessionHandle:
             {"sessionId": self._session_id, "configId": config_id, "value": value},
         )
         await self._wait_for_response(req_id, timeout=10.0)
+        _record_effort_in_resolved_model(self, self._runtime.acp_backend, config_id, value)
 
     async def apply_session_permission_routing(self) -> None:
         """Make a ``SESSION_CONFIG`` harness actually ask, or refuse to run it.

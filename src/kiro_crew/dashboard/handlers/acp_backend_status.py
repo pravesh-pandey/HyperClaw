@@ -94,6 +94,7 @@ from typing import Any, Dict, List
 
 from aiohttp import web
 
+from kiro_crew.agent_sdk.backends import ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS
 from kiro_crew.dashboard.handlers.kiro_prerequisite import _is_dashboard_owner
 from kiro_crew.sel import sel
 
@@ -212,6 +213,10 @@ def _row(state: Any, selectable: set) -> Dict[str, Any]:
             "sign_in_remedy": auth.sign_in_remedy,
             "signs_in_separately": signs_in_separately(state.backend),
         },
+        # Whether this harness's advertised ids encode effort (``model[level]``).
+        # The Settings role pickers have no slot to ask, and the server owns
+        # this convention: the pair shape alone is never sufficient.
+        "model_effort_pair_ids": state.backend in ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
         # The card. Every line is keyed by a machine id whose LABEL is the
         # panel's, phrased once per capability -- the opposite trade from
         # ``sign_in_remedy`` above, and the reason it can be translated at

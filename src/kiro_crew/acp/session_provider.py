@@ -28,6 +28,7 @@ from kiro_crew.acp.client import (
     AcpError,
     AcpModelUnavailable,
     AcpProcessDied,
+    advertised_ids_with_pair_bases,
     advertised_model_ids,
     model_is_unusable,
     registration_rate_limited_error,
@@ -913,14 +914,17 @@ class AcpSessionProvider(LLMProvider):
         verdict (fail-safe: no evidence, no entitlement granted).
         """
         advertised = advertised_model_ids(self._handle.available_models)
-        if model_is_unusable(model_id, advertised):
+        backend = self._runtime.acp_backend
+        if model_is_unusable(model_id, advertised_ids_with_pair_bases(advertised, backend)):
             # A user's explicit pick must earn a FRESH probe, not be refused on a
             # recent no-evidence failure the picker read path may have cached
             # (force=True skips the failure/empty attempt-clock replay).
             fresh = advertised_model_ids(
                 await self._guarded(self._handle.refresh_available_models(force=True))
             )
-            if model_is_unusable(model_id, fresh or advertised):
+            if model_is_unusable(
+                model_id, advertised_ids_with_pair_bases(fresh or advertised, backend)
+            ):
                 raise AcpModelUnavailable(model_id, fresh or advertised)
         await self._guarded(self._handle.set_model(model_id))
 

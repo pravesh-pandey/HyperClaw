@@ -17,7 +17,7 @@
 // here driveable as real role="option" nodes.
 vi.mock('@radix-ui/react-select', async () => await import('./__mocks__/@radix-ui/react-select'))
 
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, onTestFinished } from 'vitest'
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import React from 'react'
@@ -782,6 +782,38 @@ describe('ChatPanel — per-role reasoning effort', () => {
     )
     // The ladder was asked of the ROLE's harness, not chat's.
     expect(effortLevelsMock).toHaveBeenCalledWith(undefined, 'codex')
+  })
+
+  it('offers one row per Codex model, not one per model[effort] pair', async () => {
+    acpBackendsMock.mockImplementationOnce(() => Promise.resolve({
+      backends: ['', 'claude', 'codex'].map(id => ({
+        id, policy_id: id || 'kiro', selectable: true, installed: 'installed',
+        missing_components: [], install_command: '', restart_required: false,
+        model_effort_pair_ids: id === 'codex',
+      })),
+    }))
+    const originalModels = modelsMock.getMockImplementation()!
+    onTestFinished(() => { modelsMock.mockImplementation(originalModels) })
+    modelsMock.mockImplementation(((_slot?: string, backend?: string) => Promise.resolve(
+      backend === 'codex'
+        ? ['low', 'high', 'ultra'].flatMap(l => [
+          { model_name: `gpt-6-astra[${l}]`, description: '' },
+          { model_name: `gpt-6-sol[${l}]`, description: '' },
+        ])
+        : [{ model_name: 'auto', description: 'Default' }, { model_name: 'claude-opus-4.8', description: 'Opus' }],
+    )) as never)
+    seedMc({ agent: { role_backends: { subagent: 'codex' } } })
+    wrap('models')
+    const options = await waitFor(async () => {
+      const opts = (await openSelect('Subagent Model')).map(o => o.textContent)
+      expect(opts).toContain('gpt-6-astra')
+      return opts
+    })
+    expect(options.filter(o => o?.startsWith('gpt-6-'))).toEqual(['gpt-6-astra', 'gpt-6-sol'])
+    fireEvent.click(screen.getByRole('option', { name: 'gpt-6-sol' }))
+    await waitFor(() =>
+      expect(patchConfigMock).toHaveBeenCalledWith('agent.role_models.subagent', 'gpt-6-sol')
+    )
   })
 
   it('writes a role harness pin and clears it back to "same as chat"', async () => {

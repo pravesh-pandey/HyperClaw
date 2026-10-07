@@ -23,6 +23,13 @@ sends no explicit effort, so it retains the provider default. Both pools drive t
 same `kirocrew-knowledge` agent and preserve the existing model resolution:
 `knowledge.extraction_model` → `agent.model` → provider/`auto`.
 
+The kiro-cli agent spec inherits `agent.model` only when chat itself runs on Kiro.
+`agent.model` is an id in the chat harness's namespace, and the pool can sit on
+kiro-cli while chat is on another harness (a runtime-driven background harness
+such as Codex keeps it there), so inheriting it would hand kiro-cli a model it
+cannot serve and fail every extraction with "model is not available", leaving
+the entity graph empty. In that case the spec carries `auto`.
+
 The extraction effort is a Knowledge policy, independent of
 `agent.role_efforts.background`, which controls other background workers. For the
 Kiro ACP backend, the worker applies the requested level through the `/effort`

@@ -44,6 +44,7 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
     effort_config_option_id,
 )
+from kiro_crew.dashboard.handlers.usage import read_turn_model
 from kiro_crew.providers.acp import AcpProvider
 
 #: The id codex-acp carries its reasoning effort under, read through the resolver
@@ -51,6 +52,46 @@ from kiro_crew.providers.acp import AcpProvider
 #: itself while the production sites disagreed.
 CODEX_EFFORT = effort_config_option_id(ACP_BACKEND_CODEX)
 CLAUDE_EFFORT = effort_config_option_id(ACP_BACKEND_CLAUDE)
+
+
+@pytest.mark.asyncio
+async def test_codex_live_effort_write_updates_the_served_pair_in_both_drivers() -> None:
+    for driver_type in (AcpClient, AcpSessionHandle):
+        driver = object.__new__(driver_type)
+        driver._session_id = "session"
+        driver._resolved_model_id = "gpt-6-sol[low]"
+        driver._wait_for_response = AsyncMock()
+        if driver_type is AcpClient:
+            driver._acp_backend = ACP_BACKEND_CODEX
+            driver._send_request = AsyncMock(return_value=1)
+        else:
+            driver._runtime = MagicMock(acp_backend=ACP_BACKEND_CODEX)
+            driver._runtime.send_request = AsyncMock(return_value=1)
+
+        await driver.set_config_option(CODEX_EFFORT, "high")
+
+        assert read_turn_model(driver) == "gpt-6-sol[high]"
+
+        await driver.set_config_option(CODEX_EFFORT, "xhigh")
+
+        assert read_turn_model(driver) == "gpt-6-sol[xhigh]"
+
+
+@pytest.mark.asyncio
+async def test_codex_shared_handle_applies_a_grouped_base_model() -> None:
+    handle = object.__new__(AcpSessionHandle)
+    handle._runtime = MagicMock(acp_backend=ACP_BACKEND_CODEX)
+    handle._advertised_model_ids = MagicMock(return_value=["gpt-6-astra[low]"])
+    handle._push_model_config_option = AsyncMock(return_value="gpt-6-astra")
+    handle._resolved_model_id = "gpt-6-sol[low]"
+    handle._model = "gpt-6-sol"
+    handle.last_prompt_stats = MagicMock()
+
+    await handle.set_model("gpt-6-astra")
+
+    handle._push_model_config_option.assert_awaited_once_with("gpt-6-astra", strict=False)
+    assert handle._resolved_model_id == "gpt-6-astra"
+
 
 #: codex-acp 1.11 ``session/new``: both spellings, as the adapter emits them.
 CODEX_1_11_SESSION_NEW = {

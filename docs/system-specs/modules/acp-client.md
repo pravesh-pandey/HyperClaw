@@ -673,6 +673,11 @@ The handshake also branches on the backend:
 
 Sending the wrong shape yields `-32602 Invalid params` or `-32601 Method not found`.
 
+For a pair-ID harness such as Codex, a successful `reasoning_effort`
+`session/set_config_option` write also updates the session's resolved
+`model[effort]` ID in both ACP drivers. The turn footer reads that resolved ID;
+leaving the startup suffix in place reports the old level after a live switch.
+
 **`clientCapabilities` in the `initialize` request.** Both transports (`AcpClient._initialize_session` and `AcpRuntime`) send the shared `ACP_CLIENT_CAPABILITIES` dict from `acp/types.py`. Previously the key was omitted entirely, so the agent assumed the all-false default.
 
 **`agentInfo.version` from the `initialize` response.** Both transports retain it (`AcpClient.agent_version`, `AcpRuntime.agent_version`, surfaced through `AcpSessionHandle` → `AcpSessionProvider` → `AcpProvider.agent_version`; `""` until the handshake completes). It is the version the spawned process RUNS, which after an in-place kiro-cli upgrade differs from the binary on disk — the MCP hot-reload gate reads it for that reason. Parsed with the shared `agent_version_from_init` in `acp/_dispatch.py`; a missing or non-string value reads as unknown rather than failing the handshake.
@@ -890,8 +895,14 @@ kiro-cli uses the model from their own agent config file.
 
 **Advertised models and read-path revalidation.** Each `AcpSessionHandle` keeps
 the `availableModels` its own `session/new` answered as `available_models()`.
-That answer is captured once, and a lookup racing a token refresh can return the
-free tier. Two paths heal it through the runtime's `probe_advertised_models`,
+For a pair-ID harness, model checks include the base of each advertised
+`model[effort]` row. A grouped base pick is therefore valid and stays bare on
+the wire; the separate effort option supplies its level. This applies to the
+startup pin, the explicit-pick preflight, and the shared handle's substitute
+resolution. The original advertised rows remain the source of error details.
+The `session/new` answer is captured once, and a lookup racing a token refresh
+can return the free tier. Two paths heal it through the runtime's
+`probe_advertised_models`,
 which opens a throwaway minimal session (no MCP servers, no mode) on the same
 process and ends it before returning: `refresh_available_models` before an
 explicit `set_model` pick is refused, and `maybe_refresh_available_models(catalog_ids)`

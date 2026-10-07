@@ -2228,7 +2228,7 @@ async def _deliver_channel_dm(
     # kiro_crew.dashboard.handlers, so a top-level import closes that cycle. Only
     # this one is deferred -- `HOST_SESSION_KEY` is a constant and is imported at
     # module scope, where the top-level-imports rule wants it.
-    from kiro_crew.dashboard.chat_runner import _resolve_channel_target
+    from kiro_crew.dashboard.chat_runner import _authorize_recipient, _resolve_channel_target
 
     # A cron carries its own validated session key; an out-of-band send owns no
     # session, and the host sentinel is what operators bind host-side governance
@@ -2238,18 +2238,19 @@ async def _deliver_channel_dm(
     # on some channels (Discord opens a DM channel over REST), so a denied
     # channel must never reach it. Offloaded because the governance evaluation
     # reads profile files.
-    # The principal is supplied rather than derived: this addresses a
-    # ``configured_targets()`` entry, so the link carries a ``user:<id>`` target id
-    # and ``session_key`` is a host sentinel naming nobody. The id came off the
-    # transport's own allow-list via ``_owner_dm_target``, which is the authoritative
-    # answer the recipient check would otherwise be unable to reach.
+    # check_recipient=False: the link carries a ``configured_targets()`` entry, a
+    # ``user:<id>`` target id, which ``may_send_to`` (a predicate over bare
+    # conversation ids) can never match -- so the ladder's recipient leg would
+    # refuse every allow-listed recipient. The recipient is re-decided below
+    # against the RESOLVED conversation id, the posture chat_mirror's pre-resolve
+    # ladder call documents.
     governed = await asyncio.to_thread(
         functools.partial(
             _resolve_channel_target,
             state,
             session_key,
             ChannelLink(channel_type=channel_type, channel_id=target_id),
-            principal=target_id.removeprefix(_DM_TARGET_PREFIX),
+            check_recipient=False,
         )
     )
     if governed is None:
@@ -2266,6 +2267,22 @@ async def _deliver_channel_dm(
         # rather than fall back to a wider audience.
         return False, "channel_delivery_failed", f"{channel_type} DM target is unavailable"
     conversation_id, thread_id = resolved
+    # Recipient authorization, re-decided against the RESOLVED conversation id --
+    # the leg the ladder call above skipped (check_recipient=False), because only
+    # now does an id of the kind ``may_send_to`` judges exist. ``_owner_dm_target``
+    # yields a ``user:<id>`` target, so the principal is the bare id; the resolver
+    # already enforced its allow-list membership. Denial-only audit, as a per-send
+    # ladder leg (``_authorize_recipient``'s contract), not the once-per-link
+    # admission the mirror-link creation path records.
+    if not _authorize_recipient(
+        live_transport,
+        channel_type,
+        conversation_id,
+        thread_id,
+        principal=target_id.removeprefix(_DM_TARGET_PREFIX),
+        session_key=session_key,
+    ):
+        return False, "channel_not_permitted", f"{channel_type} is not permitted"
     # Chunked at the transport's own declared ceiling, as a mirrored turn is:
     # Discord rejects a message over its cap outright, so an unchunked long
     # report would arrive as a delivery failure instead of a message. At least one

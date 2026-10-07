@@ -3,11 +3,14 @@ import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
 import type { ModelInfo } from '../providers/types'
 
-const EFFORT_SUFFIX = /^(.*)\[(low|medium|high|xhigh|max)\]$/
+// Level grammar mirrors the backend's `_SAFE_EFFORT_RE`: the ladder is whatever
+// the harness advertises (Codex adds `ultra`), so it is not a fixed list here.
+const EFFORT_SUFFIX = /^(.*)\[([a-z][a-z0-9_-]{0,20})\]$/
 
 /** Codex advertises each model/effort pair as a model ID. Keep the base model
  *  visible while effort is selected through its own control. Window suffixes
- *  such as [1m] remain part of the model ID. */
+ *  such as [1m] start with a digit and remain part of the model ID. Callers
+ *  gate on the server's pair-id flag, never on this shape alone. */
 export function modelWithoutEffort(name: string): string {
   return EFFORT_SUFFIX.exec(name)?.[1] || name
 }
@@ -80,6 +83,12 @@ export function filterInteractiveModels(
     const base = baseModels.get(name)
     return [{ ...(base ?? model), name, ...(!base && name !== model.name ? { displayName: undefined, description: pairDescriptions.get(name) || '', rateMultiplier: undefined } : {}) }]
   })
+}
+
+/** One row per model for a pair-id harness, hiding nothing: for selectors that
+ *  must see the complete advertised list (Settings role and fallback pins). */
+export function groupModelEffortPairs(models: ModelInfo[]): ModelInfo[] {
+  return filterInteractiveModels(models, [], [], true)
 }
 
 export function useModelPickerHiddenModelsQuery() {

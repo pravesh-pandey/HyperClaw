@@ -32,7 +32,8 @@ import { platformShortcut } from '../../utils/platform'
 import { capRoleOther, clampRoleOther } from '../../lib/userProfile'
 import { ROLE_SLUGS, TECH_SLUGS } from '../../lib/profileOptions'
 import { fmtNumber } from '../../i18n/format'
-import { normalizeHiddenModels } from '../../hooks/useInteractiveModels'
+import { groupModelEffortPairs, normalizeHiddenModels, shouldSeparateModelEffort } from '../../hooks/useInteractiveModels'
+import type { ModelInfo } from '../../providers/types'
 
 import { i18nT } from '../../i18n/t'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -767,7 +768,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
     })
   )
   const fallbackModelOptions = (shown: string, server: string): string[] => {
-    const opts = ['', 'auto', ...availableModels.map(m => m.name).filter(m => m !== 'auto')]
+    const opts = ['', 'auto', ...groupedFor(chatBackend, availableModels).map(m => m.name).filter(m => m !== 'auto')]
     // Keep both the shown and the persisted id selectable while they differ:
     // an in-flight pick must not drop the server's unadvertised id from the
     // list, or the user could not switch back to it during that window.
@@ -1103,6 +1104,14 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
   // pinned to ANOTHER harness asks for that harness's catalog.
   const backgroundModelsQ = useAvailableModelsQuery({ backend: pickerBackend(resolvedBackgroundBackend, chatBackend) })
   const subagentModelsQ = useAvailableModelsQuery({ backend: pickerBackend(resolvedSubagentBackend, chatBackend) })
+  // Codex lists every model once per effort (`model[level]`). Offer one row per
+  // model, as the chat picker does: effort has its own row below, and a pair id
+  // pinned here would set it a second time. The server owns which harness does
+  // this; the id shape alone never decides it.
+  const groupedFor = (backend: string, models: ModelInfo[]): ModelInfo[] => {
+    const pairIds = acpBackendsQ.data?.backends.find(row => row.id === backend)?.model_effort_pair_ids
+    return shouldSeparateModelEffort(pairIds, models) ? groupModelEffortPairs(models) : models
+  }
 
   const roleModelOptions = (shown: string, server: string, source: { name: string }[]): string[] => {
     const opts = source.map(m => m.name)
@@ -1115,8 +1124,8 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
     opts.map(m => (m === 'auto' ? i18nT('pages.settings.chatPanel.role_model_auto') : m))
   // One array per row, shared by `options` and `optionLabels`: SettingsSelect
   // pairs a label to a value by INDEX, so both props must read the same list.
-  const backgroundModelOpts = roleModelOptions(shownBackgroundModel, backgroundModel, backgroundModelsQ.data)
-  const subagentModelOpts = roleModelOptions(shownSubagentModel, subagentModel, subagentModelsQ.data)
+  const backgroundModelOpts = roleModelOptions(shownBackgroundModel, backgroundModel, groupedFor(resolvedBackgroundBackend, backgroundModelsQ.data))
+  const subagentModelOpts = roleModelOptions(shownSubagentModel, subagentModel, groupedFor(resolvedSubagentBackend, subagentModelsQ.data))
   const fallbackOpts = fallbackModelOptions(shownFallbackModel, fallbackModel)
   const refusalFallbackOpts = fallbackModelOptions(shownRefusalFallbackModel, refusalFallbackModel)
   const backgroundModelMut = useMutation(
